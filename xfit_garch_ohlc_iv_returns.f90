@@ -10,12 +10,14 @@ program xfit_garch_ohlc_iv_returns
     use nagarch_mod,    only: nagarch_set_news_impact
     use garch_types_mod, only: garch_params_t, garch_fit_result_t
     use vol_forecast_compare_mod, only: print_implied_vol_correlations
-    use garch_fit_mod,  only: fit_symm_garch, fit_nagarch, fit_rgarch, fit_nagarch_range, fit_gjr, fit_fgarch_twist, fit_ewma, &
+    use garch_fit_mod,  only: fit_symm_garch, fit_nagarch, fit_rgarch, fit_regarch1, fit_nagarch_range, &
+                              fit_gjr, fit_fgarch_twist, fit_ewma, &
                               fit_aewma_nag, fit_aewma_twist, &
                               garch_skew_kurt, nagarch_skew_kurt, gjr_skew_kurt, &
-                              rgarch_skew_kurt, nagarch_range_skew_kurt, ewma_skew_kurt, aewma_nag_skew_kurt, aewma_twist_skew_kurt, &
+                              rgarch_skew_kurt, regarch1_skew_kurt, nagarch_range_skew_kurt, &
+                              ewma_skew_kurt, aewma_nag_skew_kurt, aewma_twist_skew_kurt, &
                               symm_garch_persist, nagarch_persist, gjr_persist, &
-                              rgarch_persist, fgarch_twist_persist, ewma_persist, &
+                              rgarch_persist, regarch1_persist, fgarch_twist_persist, ewma_persist, &
                               aewma_nag_persist, aewma_twist_persist
     implicit none
 
@@ -30,7 +32,7 @@ program xfit_garch_ohlc_iv_returns
     logical,  parameter :: flip_log_return_sign = .true.
     logical,  parameter :: standardize_log_return_by_prior_iv = .true.
     character(len=16), parameter :: models(*) = [character(len=16) :: &
-        "EWMA", "AEWMA_NAG", "AEWMA_TWIST", "SYMM_GARCH", "NAGARCH", "GJR_GARCH", "FGTWIST", &
+        "EWMA", "AEWMA_NAG", "AEWMA_TWIST", "SYMM_GARCH", "NAGARCH", "GJR_GARCH", "FGTWIST", "REGARCH1", &
         "OHLC_SYMM", "OHLC_NAGARCH", "OHLC_RGARCH", "OHLC_NAG_RANGE", "OHLC_GJR", "OHLC_FGTWIST"]
     character(len=16), parameter :: fit_assets(*) = [character(len=16) :: "SPY"]
     character(len=16), parameter :: asset_iv_assets(*) = [character(len=16) :: "SPY"]
@@ -41,9 +43,10 @@ program xfit_garch_ohlc_iv_returns
     integer, allocatable :: dates(:), iv_dates(:)
     character(len=32), allocatable :: col_names(:), iv_col_names(:)
     real(dp), allocatable :: prices(:,:), open_prices(:,:), high_prices(:,:), low_prices(:,:), iv_values(:,:)
-    real(dp), allocatable :: ret(:), ret_co(:), ret_oc(:), range_var(:)
+    real(dp), allocatable :: ret(:), ret_co(:), ret_oc(:), range_var(:), log_range(:)
     type(garch_fit_result_t) :: rows(n_model)
     integer :: row_aic_rank(n_model), row_bic_rank(n_model), row_model_idx(n_model)
+    logical :: row_comparable(n_model)
     integer :: aic_wins(n_model), bic_wins(n_model), param_count(n_model)
     integer :: aic_rank_sum(n_model), bic_rank_sum(n_model), rank_count(n_model)
     integer, allocatable :: vf_date_min(:,:), vf_date_max(:,:)
@@ -87,7 +90,8 @@ program xfit_garch_ohlc_iv_returns
     nprices = size(prices, 1)
     ncols   = size(prices, 2)
     nobs    = nprices - 1
-    allocate(ret(nobs), ret_co(nobs), ret_oc(nobs), range_var(nobs), vol_forecast(nobs), vol_forecasts(nobs,ncols,n_model))
+    allocate(ret(nobs), ret_co(nobs), ret_oc(nobs), range_var(nobs), log_range(nobs), vol_forecast(nobs), &
+             vol_forecasts(nobs,ncols,n_model))
     allocate(extra_series(nprices,ncols,size(extra_series_names)))
     vol_forecasts = 0.0_dp
     extra_series(:,:,1) = prices
@@ -107,6 +111,7 @@ program xfit_garch_ohlc_iv_returns
     write(*,'(A,A)') "Implied vol file: ", trim(implied_vol_file)
     write(*,'(A,F7.3)') "OHLC CO/OC variance forecast correlation: ", co_oc_corr
     write(*,'(A)') "OHLC model logL/AIC/BIC use separate CO and OC likelihoods; compare those criteria to CC rows with care."
+    write(*,'(A)') "REGARCH1 logL/AIC/BIC use the log-range likelihood and are excluded from AIC/BIC ranks and wins."
     call print_fit_assets()
     write(*,'(A)') "Model            Asset        omega   alpha   gamma    beta   theta   twist   scale  persist  vol_ann%        logL         AIC         BIC  iter conv    skew   ekurt AIC_rank BIC_rank"
     write(*,'(A)') repeat("-", 180)
@@ -121,6 +126,7 @@ program xfit_garch_ohlc_iv_returns
         ret_oc = log(prices(2:nprices,icol) / open_prices(2:nprices,icol))
         ret_oc = ret_oc - mean(ret_oc)
         range_var = (log(high_prices(2:nprices,icol) / low_prices(2:nprices,icol)))**2 / (4.0_dp*log(2.0_dp))
+        log_range = log(max(log(high_prices(2:nprices,icol) / low_prices(2:nprices,icol)), 1.0e-12_dp))
         nfit = 0
 
         do imod = 1, size(models)
@@ -181,6 +187,13 @@ program xfit_garch_ohlc_iv_returns
                 persist = fgarch_twist_persist(params)
                 np = 5
                 model = "FGTWIST"
+            case ("REGARCH1", "RANGE_EGARCH")
+                call fit_regarch1(ret, log_range, max_iter, gtol, fopt, params, niter, converged)
+                persist = regarch1_persist(params)
+                vol_ann = regarch1_vol_ann(ret, log_range, params)
+                np = 4
+                call regarch1_skew_kurt(ret, log_range, params, skew, ekurt)
+                model = "REGARCH1"
             case ("OHLC_SYMM", "OHLC_SYMM_GARCH")
                 call fit_ohlc_model("SYMM_GARCH", ret_co, ret_oc, fopt, params, vol_ann, persist, &
                                     skew, ekurt, niter, converged, np, vol_forecast)
@@ -213,7 +226,11 @@ program xfit_garch_ohlc_iv_returns
             logl = -real(nobs, dp) * fopt
             aic = 2.0_dp * real(np, dp) - 2.0_dp * logl
             bic = log(real(nobs, dp)) * real(np, dp) - 2.0_dp * logl
-            if (index(trim(model), "OHLC_") /= 1) call model_vol_forecast(trim(model), ret, params, persist, vol_forecast)
+            if (trim(model) == "REGARCH1") then
+                call regarch1_vol_forecast(ret, log_range, params, vol_forecast)
+            else if (index(trim(model), "OHLC_") /= 1) then
+                call model_vol_forecast(trim(model), ret, params, persist, vol_forecast)
+            end if
             vol_forecasts(:,icol,imod) = vol_forecast
             fit_model_names(imod) = model
             fit_model_have(imod) = .true.
@@ -249,13 +266,20 @@ program xfit_garch_ohlc_iv_returns
             rows(nfit)%converged = converged
             rows(nfit)%skew = skew
             rows(nfit)%ekurt = ekurt
+            row_comparable(nfit) = trim(model) /= "REGARCH1"
             param_count(imod) = np
         end do
 
         do ifit = 1, nfit
             row_aic_rank(ifit) = 1
             row_bic_rank(ifit) = 1
+            if (.not. row_comparable(ifit)) then
+                row_aic_rank(ifit) = 0
+                row_bic_rank(ifit) = 0
+                cycle
+            end if
             do jfit = 1, nfit
+                if (.not. row_comparable(jfit)) cycle
                 if (rows(jfit)%aic < rows(ifit)%aic) row_aic_rank(ifit) = row_aic_rank(ifit) + 1
                 if (rows(jfit)%bic < rows(ifit)%bic) row_bic_rank(ifit) = row_bic_rank(ifit) + 1
             end do
@@ -274,7 +298,7 @@ program xfit_garch_ohlc_iv_returns
         end do
 
         do ifit = 1, nfit
-            write(*,'(A16,1X,A9,ES12.3,7F8.4,F10.2,F12.2,F12.2,F12.2,I6,1X,L1,2F8.3,2I9)') &
+            write(*,'(A16,1X,A9,ES12.3,7F8.4,F10.2,F12.2,F12.2,F12.2,I6,1X,L1,2F10.3,2I9)') &
                 trim(rows(ifit)%model), trim(col_names(icol)), rows(ifit)%params%omega, rows(ifit)%params%alpha, &
                 rows(ifit)%params%gamma, rows(ifit)%params%beta, rows(ifit)%params%theta, &
                 rows(ifit)%params%twist, rows(ifit)%params%scale, rows(ifit)%persist, &
@@ -586,6 +610,40 @@ contains
             h = params%omega + params%alpha*x_range(t) + params%beta*h
         end do
     end subroutine rgarch_vol_forecast
+
+    subroutine regarch1_vol_forecast(y, x_log_range, params, vol)
+        real(dp), intent(in) :: y(:), x_log_range(:)
+        type(garch_params_t), intent(in) :: params
+        real(dp), intent(out) :: vol(:)
+        real(dp) :: lv, sig, z, x_range
+        integer :: t
+
+        lv = regarch1_h0(x_log_range)
+        do t = 1, size(y)
+            sig = exp(lv)
+            vol(t) = sqrt(trading_days) * sig * 100.0_dp
+            z = y(t) / max(sig, 1.0e-8_dp)
+            x_range = (x_log_range(t) - 0.43_dp - lv) / 0.29_dp
+            lv = params%omega + params%beta*lv + params%alpha*x_range + params%gamma*z
+        end do
+    end subroutine regarch1_vol_forecast
+
+    real(dp) function regarch1_vol_ann(y, x_log_range, params)
+        real(dp), intent(in) :: y(:), x_log_range(:)
+        type(garch_params_t), intent(in) :: params
+        real(dp), allocatable :: vol(:)
+
+        allocate(vol(size(x_log_range)))
+        call regarch1_vol_forecast(y, x_log_range, params, vol)
+        regarch1_vol_ann = sqrt(sum(vol**2) / real(size(vol), dp))
+        deallocate(vol)
+    end function regarch1_vol_ann
+
+    real(dp) function regarch1_h0(x_log_range)
+        real(dp), intent(in) :: x_log_range(:)
+
+        regarch1_h0 = sum(x_log_range - 0.43_dp) / real(size(x_log_range), dp)
+    end function regarch1_h0
 
     real(dp) function rgarch_h0(y, x_range, params)
         real(dp), intent(in) :: y(:), x_range(:)
