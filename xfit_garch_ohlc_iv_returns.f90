@@ -1,0 +1,680 @@
+! Fit close-close and OHLC GARCH-family Normal models to ETF returns and
+! compare model volatility forecasts with mapped implied-volatility indices.
+! Edit models(:), fit_assets(:), asset_iv_assets(:), and asset_iv_indices(:) to configure.
+
+program xfit_garch_ohlc_iv_returns
+    use kind_mod,       only: dp
+    use strings_mod,    only: uppercase
+    use csv_mod,        only: read_price_csv, read_ohlc_csv, print_price_sample_info, date_label
+    use stats_mod,      only: mean, sd, sort_real
+    use nagarch_mod,    only: nagarch_set_news_impact
+    use garch_types_mod, only: garch_params_t, garch_fit_result_t
+    use vol_forecast_compare_mod, only: print_implied_vol_correlations
+    use garch_fit_mod,  only: fit_symm_garch, fit_nagarch, fit_rgarch, fit_nagarch_range, fit_gjr, fit_fgarch_twist, fit_ewma, &
+                              fit_aewma_nag, fit_aewma_twist, &
+                              garch_skew_kurt, nagarch_skew_kurt, gjr_skew_kurt, &
+                              rgarch_skew_kurt, nagarch_range_skew_kurt, ewma_skew_kurt, aewma_nag_skew_kurt, aewma_twist_skew_kurt, &
+                              symm_garch_persist, nagarch_persist, gjr_persist, &
+                              rgarch_persist, fgarch_twist_persist, ewma_persist, &
+                              aewma_nag_persist, aewma_twist_persist
+    implicit none
+
+    character(len=*), parameter :: prices_file = "prices_ohlc.csv"
+    character(len=*), parameter :: implied_vol_file = "vix_spy.csv"
+    real(dp), parameter :: trading_days = 252.0_dp
+    real(dp), parameter :: co_oc_corr = 0.0_dp
+    integer,  parameter :: max_iter = 500
+    real(dp), parameter :: gtol = 1.0e-7_dp
+    logical,  parameter :: print_vol_forecast_stats = .false.
+    logical,  parameter :: fit_all_assets = .true.
+    logical,  parameter :: flip_log_return_sign = .true.
+    logical,  parameter :: standardize_log_return_by_prior_iv = .true.
+    character(len=16), parameter :: models(*) = [character(len=16) :: &
+        "EWMA", "AEWMA_NAG", "AEWMA_TWIST", "SYMM_GARCH", "NAGARCH", "GJR_GARCH", "FGTWIST", &
+        "OHLC_SYMM", "OHLC_NAGARCH", "OHLC_RGARCH", "OHLC_NAG_RANGE", "OHLC_GJR", "OHLC_FGTWIST"]
+    character(len=16), parameter :: fit_assets(*) = [character(len=16) :: "SPY"]
+    character(len=16), parameter :: asset_iv_assets(*) = [character(len=16) :: "SPY"]
+    character(len=16), parameter :: asset_iv_indices(*) = [character(len=16) :: "VIX"]
+    character(len=16), parameter :: extra_series_names(*) = [character(len=16) :: "LOG_RETURN"]
+    integer, parameter :: n_model = size(models)
+
+    integer, allocatable :: dates(:), iv_dates(:)
+    character(len=32), allocatable :: col_names(:), iv_col_names(:)
+    real(dp), allocatable :: prices(:,:), open_prices(:,:), high_prices(:,:), low_prices(:,:), iv_values(:,:)
+    real(dp), allocatable :: ret(:), ret_co(:), ret_oc(:), range_var(:)
+    type(garch_fit_result_t) :: rows(n_model)
+    integer :: row_aic_rank(n_model), row_bic_rank(n_model), row_model_idx(n_model)
+    integer :: aic_wins(n_model), bic_wins(n_model), param_count(n_model)
+    integer :: aic_rank_sum(n_model), bic_rank_sum(n_model), rank_count(n_model)
+    integer, allocatable :: vf_date_min(:,:), vf_date_max(:,:)
+    character(len=256) :: aic_symbols(n_model)
+    character(len=16) :: fit_model_names(n_model)
+    character(len=16), allocatable :: vf_model(:)
+    integer :: nprices, ncols, nobs, icol, imod, ifit, jfit, nfit
+    integer :: niter, np, clock_start, clock_end, clock_rate, date_min, date_max
+    real(dp) :: ret_mean, ret_std, fopt
+    real(dp) :: persist, h_unc, vol_ann, logl, aic, bic, skew, ekurt, elapsed_s
+    real(dp) :: vf_med, vf_mean, vf_sd, vf_ekurt, vf_min, vf_max, vf_first, vf_last
+    real(dp), allocatable :: vol_forecast(:), vol_forecasts(:,:,:)
+    real(dp), allocatable :: extra_series(:,:,:)
+    real(dp) :: extra_signs(size(extra_series_names))
+    real(dp), allocatable :: vf_median(:,:), vf_mean_arr(:,:), vf_sd_arr(:,:), vf_ekurt_arr(:,:)
+    real(dp), allocatable :: vf_min_arr(:,:), vf_max_arr(:,:), vf_first_arr(:,:), vf_last_arr(:,:)
+    type(garch_params_t) :: params
+    logical :: converged
+    logical :: fit_model_have(n_model)
+    logical, allocatable :: vf_have(:,:)
+    character(len=16) :: model
+
+    call system_clock(clock_start, clock_rate)
+    call nagarch_set_news_impact(.false.)
+    aic_wins = 0
+    bic_wins = 0
+    aic_rank_sum = 0
+    bic_rank_sum = 0
+    rank_count = 0
+    param_count = 0
+    aic_symbols = ""
+    fit_model_have = .false.
+    fit_model_names = ""
+
+    if (fit_all_assets) then
+        call read_ohlc_csv(prices_file, dates, col_names, open_prices, prices, high_prices=high_prices, low_prices=low_prices)
+    else
+        call read_ohlc_csv(prices_file, dates, col_names, open_prices, prices, fit_assets, high_prices, low_prices)
+    end if
+    call read_price_csv(implied_vol_file, iv_dates, iv_col_names, iv_values)
+    nprices = size(prices, 1)
+    ncols   = size(prices, 2)
+    nobs    = nprices - 1
+    allocate(ret(nobs), ret_co(nobs), ret_oc(nobs), range_var(nobs), vol_forecast(nobs), vol_forecasts(nobs,ncols,n_model))
+    allocate(extra_series(nprices,ncols,size(extra_series_names)))
+    vol_forecasts = 0.0_dp
+    extra_series(:,:,1) = prices
+    extra_signs = 1.0_dp
+    if (flip_log_return_sign) extra_signs(1) = -1.0_dp
+    if (print_vol_forecast_stats) then
+        allocate(vf_median(ncols,n_model), vf_mean_arr(ncols,n_model), vf_sd_arr(ncols,n_model))
+        allocate(vf_ekurt_arr(ncols,n_model), vf_min_arr(ncols,n_model), vf_max_arr(ncols,n_model))
+        allocate(vf_first_arr(ncols,n_model), vf_last_arr(ncols,n_model))
+        allocate(vf_date_min(ncols,n_model), vf_date_max(ncols,n_model), vf_have(ncols,n_model))
+        allocate(vf_model(n_model))
+        vf_have = .false.
+        vf_model = ""
+    end if
+
+    call print_price_sample_info(prices_file, dates, ncols)
+    write(*,'(A,A)') "Implied vol file: ", trim(implied_vol_file)
+    write(*,'(A,F7.3)') "OHLC CO/OC variance forecast correlation: ", co_oc_corr
+    write(*,'(A)') "OHLC model logL/AIC/BIC use separate CO and OC likelihoods; compare those criteria to CC rows with care."
+    call print_fit_assets()
+    write(*,'(A)') "Model            Asset        omega   alpha   gamma    beta   theta   twist   scale  persist  vol_ann%        logL         AIC         BIC  iter conv    skew   ekurt AIC_rank BIC_rank"
+    write(*,'(A)') repeat("-", 180)
+
+    do icol = 1, ncols
+        ret = log(prices(2:nprices,icol) / prices(1:nprices-1,icol))
+        ret_mean = mean(ret)
+        ret = ret - ret_mean
+        ret_std = sd(ret)
+        ret_co = log(open_prices(2:nprices,icol) / prices(1:nprices-1,icol))
+        ret_co = ret_co - mean(ret_co)
+        ret_oc = log(prices(2:nprices,icol) / open_prices(2:nprices,icol))
+        ret_oc = ret_oc - mean(ret_oc)
+        range_var = (log(high_prices(2:nprices,icol) / low_prices(2:nprices,icol)))**2 / (4.0_dp*log(2.0_dp))
+        nfit = 0
+
+        do imod = 1, size(models)
+            model = uppercase(trim(models(imod)))
+            params = garch_params_t()
+
+            select case (trim(model))
+            case ("EWMA", "IGARCH", "IGARCH_EWMA")
+                call fit_ewma(ret, max_iter, gtol, fopt, params, niter, converged)
+                persist = ewma_persist(params)
+                h_unc = sum(ret**2) / real(nobs, dp)
+                vol_ann = sqrt(trading_days * h_unc) * 100.0_dp
+                np = 1
+                call ewma_skew_kurt(ret, params, skew, ekurt)
+                model = "EWMA"
+            case ("AEWMA_NAG", "ASYM_EWMA_NAG")
+                call fit_aewma_nag(ret, max_iter, gtol, fopt, params, niter, converged)
+                persist = aewma_nag_persist(params)
+                h_unc = sum(ret**2) / real(nobs, dp)
+                vol_ann = sqrt(trading_days * h_unc) * 100.0_dp
+                np = 3
+                call aewma_nag_skew_kurt(ret, params, skew, ekurt)
+                model = "AEWMA_NAG"
+            case ("AEWMA_TWIST", "ASYM_EWMA_TWIST")
+                call fit_aewma_twist(ret, max_iter, gtol, fopt, params, niter, converged)
+                persist = aewma_twist_persist(params)
+                h_unc = sum(ret**2) / real(nobs, dp)
+                vol_ann = sqrt(trading_days * h_unc) * 100.0_dp
+                np = 4
+                call aewma_twist_skew_kurt(ret, params, skew, ekurt)
+                model = "AEWMA_TWIST"
+            case ("SYMM_GARCH", "GARCH", "SYMM")
+                call fit_symm_garch(ret, max_iter, gtol, fopt, params, niter, converged)
+                persist = symm_garch_persist(params)
+                h_unc = params%omega / max(1.0_dp - persist, 1.0e-8_dp)
+                vol_ann = sqrt(trading_days * h_unc) * 100.0_dp
+                np = 3
+                call garch_skew_kurt(ret, params, skew, ekurt)
+                model = "SYMM_GARCH"
+            case ("NAGARCH")
+                call fit_nagarch(ret, max_iter, gtol, fopt, params, niter, converged)
+                persist = nagarch_persist(params)
+                h_unc = params%omega / max(1.0_dp - persist, 1.0e-8_dp)
+                vol_ann = sqrt(trading_days * h_unc) * 100.0_dp
+                np = 4
+                call nagarch_skew_kurt(ret, params, skew, ekurt)
+            case ("GJR_GARCH", "GJR")
+                call fit_gjr(ret, max_iter, gtol, fopt, params, niter, converged)
+                persist = gjr_persist(params)
+                h_unc = params%omega / max(1.0_dp - persist, 1.0e-8_dp)
+                vol_ann = sqrt(trading_days * h_unc) * 100.0_dp
+                np = 4
+                call gjr_skew_kurt(ret, params, skew, ekurt)
+                model = "GJR_GARCH"
+            case ("FGTWIST", "FGARCH_TWIST")
+                call fit_fgarch_twist(ret, ret_std, max_iter, gtol, fopt, params, &
+                                      vol_ann, skew, ekurt, niter, converged)
+                persist = fgarch_twist_persist(params)
+                np = 5
+                model = "FGTWIST"
+            case ("OHLC_SYMM", "OHLC_SYMM_GARCH")
+                call fit_ohlc_model("SYMM_GARCH", ret_co, ret_oc, fopt, params, vol_ann, persist, &
+                                    skew, ekurt, niter, converged, np, vol_forecast)
+                model = "OHLC_SYMM"
+            case ("OHLC_NAGARCH")
+                call fit_ohlc_model("NAGARCH", ret_co, ret_oc, fopt, params, vol_ann, persist, &
+                                    skew, ekurt, niter, converged, np, vol_forecast)
+                model = "OHLC_NAGARCH"
+            case ("OHLC_RGARCH", "OHLC_RANGE_GARCH")
+                call fit_ohlc_rgarch_model(ret_co, ret_oc, range_var, fopt, params, vol_ann, persist, &
+                                           skew, ekurt, niter, converged, np, vol_forecast)
+                model = "OHLC_RGARCH"
+            case ("OHLC_NAG_RANGE", "OHLC_NAGARCH_RANGE")
+                call fit_ohlc_nag_range_model(ret_co, ret_oc, range_var, fopt, params, vol_ann, persist, &
+                                              skew, ekurt, niter, converged, np, vol_forecast)
+                model = "OHLC_NAG_RANGE"
+            case ("OHLC_GJR", "OHLC_GJR_GARCH")
+                call fit_ohlc_model("GJR_GARCH", ret_co, ret_oc, fopt, params, vol_ann, persist, &
+                                    skew, ekurt, niter, converged, np, vol_forecast)
+                model = "OHLC_GJR"
+            case ("OHLC_FGTWIST")
+                call fit_ohlc_model("FGTWIST", ret_co, ret_oc, fopt, params, vol_ann, persist, &
+                                    skew, ekurt, niter, converged, np, vol_forecast)
+                model = "OHLC_FGTWIST"
+            case default
+                write(*,'(A,A)') "Skipping unknown model: ", trim(models(imod))
+                cycle
+            end select
+
+            logl = -real(nobs, dp) * fopt
+            aic = 2.0_dp * real(np, dp) - 2.0_dp * logl
+            bic = log(real(nobs, dp)) * real(np, dp) - 2.0_dp * logl
+            if (index(trim(model), "OHLC_") /= 1) call model_vol_forecast(trim(model), ret, params, persist, vol_forecast)
+            vol_forecasts(:,icol,imod) = vol_forecast
+            fit_model_names(imod) = model
+            fit_model_have(imod) = .true.
+            if (print_vol_forecast_stats) then
+                call summarize_vol_forecast(vol_forecast, dates(2:nprices), vf_med, vf_mean, vf_sd, vf_ekurt, &
+                                            vf_min, vf_max, vf_first, vf_last, date_min, date_max)
+                vf_model(imod) = model
+                vf_median(icol,imod) = vf_med
+                vf_mean_arr(icol,imod) = vf_mean
+                vf_sd_arr(icol,imod) = vf_sd
+                vf_ekurt_arr(icol,imod) = vf_ekurt
+                vf_min_arr(icol,imod) = vf_min
+                vf_max_arr(icol,imod) = vf_max
+                vf_first_arr(icol,imod) = vf_first
+                vf_last_arr(icol,imod) = vf_last
+                vf_date_min(icol,imod) = date_min
+                vf_date_max(icol,imod) = date_max
+                vf_have(icol,imod) = .true.
+            end if
+
+            nfit = nfit + 1
+            rows(nfit) = garch_fit_result_t()
+            rows(nfit)%model = model
+            row_model_idx(nfit) = imod
+            rows(nfit)%params = params
+            rows(nfit)%persist = persist
+            rows(nfit)%vol_ann = vol_ann
+            rows(nfit)%logl = logl
+            rows(nfit)%aic = aic
+            rows(nfit)%bic = bic
+            rows(nfit)%nparam = np
+            rows(nfit)%niter = niter
+            rows(nfit)%converged = converged
+            rows(nfit)%skew = skew
+            rows(nfit)%ekurt = ekurt
+            param_count(imod) = np
+        end do
+
+        do ifit = 1, nfit
+            row_aic_rank(ifit) = 1
+            row_bic_rank(ifit) = 1
+            do jfit = 1, nfit
+                if (rows(jfit)%aic < rows(ifit)%aic) row_aic_rank(ifit) = row_aic_rank(ifit) + 1
+                if (rows(jfit)%bic < rows(ifit)%bic) row_bic_rank(ifit) = row_bic_rank(ifit) + 1
+            end do
+            if (row_aic_rank(ifit) == 1) then
+                aic_wins(row_model_idx(ifit)) = aic_wins(row_model_idx(ifit)) + 1
+                if (len_trim(aic_symbols(row_model_idx(ifit))) == 0) then
+                    aic_symbols(row_model_idx(ifit)) = trim(col_names(icol))
+                else
+                    aic_symbols(row_model_idx(ifit)) = trim(aic_symbols(row_model_idx(ifit))) // " " // trim(col_names(icol))
+                end if
+            end if
+            if (row_bic_rank(ifit) == 1) bic_wins(row_model_idx(ifit)) = bic_wins(row_model_idx(ifit)) + 1
+            aic_rank_sum(row_model_idx(ifit)) = aic_rank_sum(row_model_idx(ifit)) + row_aic_rank(ifit)
+            bic_rank_sum(row_model_idx(ifit)) = bic_rank_sum(row_model_idx(ifit)) + row_bic_rank(ifit)
+            rank_count(row_model_idx(ifit)) = rank_count(row_model_idx(ifit)) + 1
+        end do
+
+        do ifit = 1, nfit
+            write(*,'(A16,1X,A9,ES12.3,7F8.4,F10.2,F12.2,F12.2,F12.2,I6,1X,L1,2F8.3,2I9)') &
+                trim(rows(ifit)%model), trim(col_names(icol)), rows(ifit)%params%omega, rows(ifit)%params%alpha, &
+                rows(ifit)%params%gamma, rows(ifit)%params%beta, rows(ifit)%params%theta, &
+                rows(ifit)%params%twist, rows(ifit)%params%scale, rows(ifit)%persist, &
+                rows(ifit)%vol_ann, rows(ifit)%logl, rows(ifit)%aic, rows(ifit)%bic, rows(ifit)%niter, &
+                rows(ifit)%converged, rows(ifit)%skew, rows(ifit)%ekurt, row_aic_rank(ifit), row_bic_rank(ifit)
+        end do
+    end do
+
+    call system_clock(clock_end)
+    elapsed_s = real(clock_end - clock_start, dp) / real(clock_rate, dp)
+    write(*,'(/,A)') "Model selection counts:"
+    write(*,'(A)') "Model            #param  AIC_wins  BIC_wins AIC_avg_rank BIC_avg_rank  AIC_symbols"
+    write(*,'(A)') repeat("-", 100)
+    do imod = 1, size(models)
+        if (rank_count(imod) > 0) then
+            write(*,'(A16,I8,2I10,2F13.2,2X,A)') trim(uppercase(trim(models(imod)))), param_count(imod), &
+                aic_wins(imod), bic_wins(imod), real(aic_rank_sum(imod), dp) / real(rank_count(imod), dp), &
+                real(bic_rank_sum(imod), dp) / real(rank_count(imod), dp), trim(aic_symbols(imod))
+        else
+            write(*,'(A16,I8,2I10,2F13.2,2X,A)') trim(uppercase(trim(models(imod)))), param_count(imod), &
+                aic_wins(imod), bic_wins(imod), 0.0_dp, 0.0_dp, trim(aic_symbols(imod))
+        end if
+    end do
+    if (print_vol_forecast_stats) call print_vol_forecast_table()
+    call print_implied_vol_correlations(implied_vol_file, col_names, fit_model_names, fit_model_have, &
+                                        dates(2:nprices), vol_forecasts, iv_dates, iv_col_names, iv_values, &
+                                        asset_iv_assets, asset_iv_indices)
+    call print_implied_vol_correlations(implied_vol_file, col_names, fit_model_names, fit_model_have, &
+                                        dates(2:nprices), vol_forecasts, iv_dates, iv_col_names, iv_values, &
+                                        asset_iv_assets, asset_iv_indices, "log_diff", [1, 5, 22], &
+                                        extra_series_names, dates, extra_series, extra_signs, &
+                                        standardize_log_return_by_prior_iv)
+    write(*,'(/,A,F10.3,A)') "Elapsed wall time: ", elapsed_s, " seconds"
+
+contains
+
+    subroutine fit_ohlc_rgarch_model(y_co, y_oc, x_range, f_combo, params_out, vol_ann_out, persist_out, &
+                                     skew_out, ekurt_out, niter_out, converged_out, np_out, vol_out)
+        real(dp), intent(in) :: y_co(:), y_oc(:), x_range(:)
+        real(dp), intent(out) :: f_combo, vol_ann_out, persist_out, skew_out, ekurt_out
+        type(garch_params_t), intent(out) :: params_out
+        integer, intent(out) :: niter_out, np_out
+        logical, intent(out) :: converged_out
+        real(dp), intent(out) :: vol_out(:)
+        type(garch_params_t) :: p_co, p_oc
+        real(dp), allocatable :: vol_co(:), vol_oc(:)
+        real(dp) :: f_co, f_oc, persist_co, persist_oc, vol_ann_co, vol_ann_oc
+        real(dp) :: skew_co, skew_oc, ekurt_co, ekurt_oc
+        integer :: niter_co, niter_oc, t
+        logical :: conv_co, conv_oc
+
+        allocate(vol_co(size(y_co)), vol_oc(size(y_oc)))
+        call fit_one_rgarch(y_co, x_range, f_co, p_co, vol_ann_co, persist_co, &
+                            skew_co, ekurt_co, niter_co, conv_co)
+        call fit_one_rgarch(y_oc, x_range, f_oc, p_oc, vol_ann_oc, persist_oc, &
+                            skew_oc, ekurt_oc, niter_oc, conv_oc)
+        call rgarch_vol_forecast(y_co, x_range, p_co, vol_co)
+        call rgarch_vol_forecast(y_oc, x_range, p_oc, vol_oc)
+        do t = 1, size(vol_out)
+            vol_out(t) = sqrt(max(vol_co(t)**2 + vol_oc(t)**2 + 2.0_dp*co_oc_corr*vol_co(t)*vol_oc(t), 0.0_dp))
+        end do
+
+        f_combo = f_co + f_oc
+        params_out = p_co
+        persist_out = 0.5_dp * (persist_co + persist_oc)
+        vol_ann_out = sqrt(sum(vol_out**2) / real(size(vol_out), dp))
+        skew_out = 0.5_dp * (skew_co + skew_oc)
+        ekurt_out = 0.5_dp * (ekurt_co + ekurt_oc)
+        niter_out = niter_co + niter_oc
+        converged_out = conv_co .and. conv_oc
+        np_out = 6
+        deallocate(vol_co, vol_oc)
+    end subroutine fit_ohlc_rgarch_model
+
+    subroutine fit_one_rgarch(y, x_range, f_out, params_out, vol_ann_out, persist_out, &
+                              skew_out, ekurt_out, niter_out, converged_out)
+        real(dp), intent(in) :: y(:), x_range(:)
+        real(dp), intent(out) :: f_out, vol_ann_out, persist_out, skew_out, ekurt_out
+        type(garch_params_t), intent(out) :: params_out
+        integer, intent(out) :: niter_out
+        logical, intent(out) :: converged_out
+        real(dp) :: h0
+
+        call fit_rgarch(y, x_range, 2*max_iter, gtol, f_out, params_out, niter_out, converged_out)
+        persist_out = rgarch_persist(params_out)
+        h0 = rgarch_h0(y, x_range, params_out)
+        vol_ann_out = sqrt(trading_days * h0) * 100.0_dp
+        call rgarch_skew_kurt(y, x_range, params_out, skew_out, ekurt_out)
+    end subroutine fit_one_rgarch
+
+    subroutine fit_ohlc_nag_range_model(y_co, y_oc, x_range, f_combo, params_out, vol_ann_out, persist_out, &
+                                        skew_out, ekurt_out, niter_out, converged_out, np_out, vol_out)
+        real(dp), intent(in) :: y_co(:), y_oc(:), x_range(:)
+        real(dp), intent(out) :: f_combo, vol_ann_out, persist_out, skew_out, ekurt_out
+        type(garch_params_t), intent(out) :: params_out
+        integer, intent(out) :: niter_out, np_out
+        logical, intent(out) :: converged_out
+        real(dp), intent(out) :: vol_out(:)
+        type(garch_params_t) :: p_co, p_oc
+        real(dp), allocatable :: vol_co(:), vol_oc(:)
+        real(dp) :: f_co, f_oc, persist_co, persist_oc, vol_ann_co, vol_ann_oc
+        real(dp) :: skew_co, skew_oc, ekurt_co, ekurt_oc
+        integer :: niter_co, niter_oc, t
+        logical :: conv_co, conv_oc
+
+        allocate(vol_co(size(y_co)), vol_oc(size(y_oc)))
+        call fit_one_nag_range(y_co, x_range, f_co, p_co, vol_ann_co, persist_co, &
+                               skew_co, ekurt_co, niter_co, conv_co)
+        call fit_one_nag_range(y_oc, x_range, f_oc, p_oc, vol_ann_oc, persist_oc, &
+                               skew_oc, ekurt_oc, niter_oc, conv_oc)
+        call nagarch_range_vol_forecast(y_co, x_range, p_co, persist_co, vol_co)
+        call nagarch_range_vol_forecast(y_oc, x_range, p_oc, persist_oc, vol_oc)
+        do t = 1, size(vol_out)
+            vol_out(t) = sqrt(max(vol_co(t)**2 + vol_oc(t)**2 + 2.0_dp*co_oc_corr*vol_co(t)*vol_oc(t), 0.0_dp))
+        end do
+
+        f_combo = f_co + f_oc
+        params_out = p_co
+        persist_out = 0.5_dp * (persist_co + persist_oc)
+        vol_ann_out = sqrt(sum(vol_out**2) / real(size(vol_out), dp))
+        skew_out = 0.5_dp * (skew_co + skew_oc)
+        ekurt_out = 0.5_dp * (ekurt_co + ekurt_oc)
+        niter_out = niter_co + niter_oc
+        converged_out = conv_co .and. conv_oc
+        np_out = 10
+        deallocate(vol_co, vol_oc)
+    end subroutine fit_ohlc_nag_range_model
+
+    subroutine fit_one_nag_range(y, x_range, f_out, params_out, vol_ann_out, persist_out, &
+                                 skew_out, ekurt_out, niter_out, converged_out)
+        real(dp), intent(in) :: y(:), x_range(:)
+        real(dp), intent(out) :: f_out, vol_ann_out, persist_out, skew_out, ekurt_out
+        type(garch_params_t), intent(out) :: params_out
+        integer, intent(out) :: niter_out
+        logical, intent(out) :: converged_out
+        real(dp) :: h0
+
+        call fit_nagarch_range(y, x_range, 2*max_iter, gtol, f_out, params_out, niter_out, converged_out)
+        persist_out = nagarch_persist(params_out)
+        h0 = nagarch_range_h0(y, x_range, params_out, persist_out)
+        vol_ann_out = sqrt(trading_days * h0) * 100.0_dp
+        call nagarch_range_skew_kurt(y, x_range, params_out, skew_out, ekurt_out)
+    end subroutine fit_one_nag_range
+
+    subroutine fit_ohlc_model(component_model, y_co, y_oc, f_combo, params_out, vol_ann_out, persist_out, &
+                              skew_out, ekurt_out, niter_out, converged_out, np_out, vol_out)
+        character(len=*), intent(in) :: component_model
+        real(dp), intent(in) :: y_co(:), y_oc(:)
+        real(dp), intent(out) :: f_combo, vol_ann_out, persist_out, skew_out, ekurt_out
+        type(garch_params_t), intent(out) :: params_out
+        integer, intent(out) :: niter_out, np_out
+        logical, intent(out) :: converged_out
+        real(dp), intent(out) :: vol_out(:)
+        type(garch_params_t) :: p_co, p_oc
+        real(dp), allocatable :: vol_co(:), vol_oc(:)
+        real(dp) :: f_co, f_oc, persist_co, persist_oc, vol_ann_co, vol_ann_oc
+        real(dp) :: skew_co, skew_oc, ekurt_co, ekurt_oc
+        integer :: niter_co, niter_oc, np_component, t
+        logical :: conv_co, conv_oc
+
+        allocate(vol_co(size(y_co)), vol_oc(size(y_oc)))
+        call fit_one_model(component_model, y_co, f_co, p_co, vol_ann_co, persist_co, &
+                           skew_co, ekurt_co, niter_co, conv_co, np_component)
+        call fit_one_model(component_model, y_oc, f_oc, p_oc, vol_ann_oc, persist_oc, &
+                           skew_oc, ekurt_oc, niter_oc, conv_oc, np_component)
+        call model_vol_forecast(component_model, y_co, p_co, persist_co, vol_co)
+        call model_vol_forecast(component_model, y_oc, p_oc, persist_oc, vol_oc)
+        do t = 1, size(vol_out)
+            vol_out(t) = sqrt(max(vol_co(t)**2 + vol_oc(t)**2 + 2.0_dp*co_oc_corr*vol_co(t)*vol_oc(t), 0.0_dp))
+        end do
+
+        f_combo = f_co + f_oc
+        params_out = p_co
+        persist_out = 0.5_dp * (persist_co + persist_oc)
+        vol_ann_out = sqrt(sum(vol_out**2) / real(size(vol_out), dp))
+        skew_out = 0.5_dp * (skew_co + skew_oc)
+        ekurt_out = 0.5_dp * (ekurt_co + ekurt_oc)
+        niter_out = niter_co + niter_oc
+        converged_out = conv_co .and. conv_oc
+        np_out = 2 * np_component
+        deallocate(vol_co, vol_oc)
+    end subroutine fit_ohlc_model
+
+    subroutine fit_one_model(model_name, y, f_out, params_out, vol_ann_out, persist_out, &
+                             skew_out, ekurt_out, niter_out, converged_out, np_out)
+        character(len=*), intent(in) :: model_name
+        real(dp), intent(in) :: y(:)
+        real(dp), intent(out) :: f_out, vol_ann_out, persist_out, skew_out, ekurt_out
+        type(garch_params_t), intent(out) :: params_out
+        integer, intent(out) :: niter_out, np_out
+        logical, intent(out) :: converged_out
+        real(dp) :: h_unc, y_sd
+
+        select case (trim(model_name))
+        case ("SYMM_GARCH")
+            call fit_symm_garch(y, max_iter, gtol, f_out, params_out, niter_out, converged_out)
+            persist_out = symm_garch_persist(params_out)
+            h_unc = params_out%omega / max(1.0_dp - persist_out, 1.0e-8_dp)
+            vol_ann_out = sqrt(trading_days * h_unc) * 100.0_dp
+            np_out = 3
+            call garch_skew_kurt(y, params_out, skew_out, ekurt_out)
+        case ("NAGARCH")
+            call fit_nagarch(y, max_iter, gtol, f_out, params_out, niter_out, converged_out)
+            persist_out = nagarch_persist(params_out)
+            h_unc = params_out%omega / max(1.0_dp - persist_out, 1.0e-8_dp)
+            vol_ann_out = sqrt(trading_days * h_unc) * 100.0_dp
+            np_out = 4
+            call nagarch_skew_kurt(y, params_out, skew_out, ekurt_out)
+        case ("GJR_GARCH")
+            call fit_gjr(y, max_iter, gtol, f_out, params_out, niter_out, converged_out)
+            persist_out = gjr_persist(params_out)
+            h_unc = params_out%omega / max(1.0_dp - persist_out, 1.0e-8_dp)
+            vol_ann_out = sqrt(trading_days * h_unc) * 100.0_dp
+            np_out = 4
+            call gjr_skew_kurt(y, params_out, skew_out, ekurt_out)
+        case ("FGTWIST")
+            y_sd = sd(y)
+            call fit_fgarch_twist(y, y_sd, max_iter, gtol, f_out, params_out, &
+                                  vol_ann_out, skew_out, ekurt_out, niter_out, converged_out)
+            persist_out = fgarch_twist_persist(params_out)
+            np_out = 5
+        case default
+            f_out = huge(1.0_dp)
+            params_out = garch_params_t()
+            vol_ann_out = 0.0_dp
+            persist_out = 0.0_dp
+            skew_out = 0.0_dp
+            ekurt_out = 0.0_dp
+            niter_out = 0
+            converged_out = .false.
+            np_out = 0
+        end select
+    end subroutine fit_one_model
+
+    subroutine model_vol_forecast(model_name, y, params, persist, vol)
+        character(len=*), intent(in) :: model_name
+        real(dp), intent(in) :: y(:)
+        type(garch_params_t), intent(in) :: params
+        real(dp), intent(in) :: persist
+        real(dp), intent(out) :: vol(:)
+        real(dp) :: h, sqrth, z, r, ind, q
+        integer :: t
+
+        if (trim(model_name) == "EWMA" .or. trim(model_name) == "AEWMA_NAG" .or. &
+            trim(model_name) == "AEWMA_TWIST") then
+            h = sum(y**2) / real(size(y), dp)
+        else
+            h = params%omega / max(1.0_dp - persist, 1.0e-8_dp)
+        end if
+        do t = 1, size(y)
+            h = max(h, 1.0e-12_dp)
+            sqrth = sqrt(h)
+            vol(t) = sqrt(trading_days * h) * 100.0_dp
+            select case (trim(model_name))
+            case ("EWMA")
+                h = params%beta*h + params%alpha*y(t)**2
+            case ("AEWMA_NAG")
+                z = y(t) / sqrth
+                q = z - params%theta
+                h = params%beta*h + params%alpha*params%scale*h*q**2
+            case ("AEWMA_TWIST")
+                z = y(t) / sqrth
+                q = abs(z - params%theta) - params%twist*(z - params%theta)
+                h = params%beta*h + params%alpha*params%scale*h*q**2
+            case ("SYMM_GARCH")
+                h = params%omega + params%alpha*y(t)**2 + params%beta*h
+            case ("NAGARCH")
+                r = y(t) - params%theta*sqrth
+                h = params%omega + params%alpha*r**2 + params%beta*h
+            case ("GJR_GARCH")
+                ind = merge(1.0_dp, 0.0_dp, y(t) < 0.0_dp)
+                h = params%omega + (params%alpha + params%gamma*ind)*y(t)**2 + params%beta*h
+            case ("FGTWIST")
+                z = y(t) / sqrth
+                q = abs(z - params%theta) - params%twist*(z - params%theta)
+                h = params%omega + params%alpha*h*q**2 + params%beta*h
+            end select
+        end do
+    end subroutine model_vol_forecast
+
+    subroutine nagarch_range_vol_forecast(y, x_range, params, persist, vol)
+        real(dp), intent(in) :: y(:), x_range(:), persist
+        type(garch_params_t), intent(in) :: params
+        real(dp), intent(out) :: vol(:)
+        real(dp) :: h, sqrth, r
+        integer :: t
+
+        h = nagarch_range_h0(y, x_range, params, persist)
+        do t = 1, size(y)
+            h = max(h, 1.0e-12_dp)
+            sqrth = sqrt(h)
+            vol(t) = sqrt(trading_days * h) * 100.0_dp
+            r = y(t) - params%theta*sqrth
+            h = params%omega + params%alpha*r**2 + params%gamma*x_range(t) + params%beta*h
+        end do
+    end subroutine nagarch_range_vol_forecast
+
+    subroutine rgarch_vol_forecast(y, x_range, params, vol)
+        real(dp), intent(in) :: y(:), x_range(:)
+        type(garch_params_t), intent(in) :: params
+        real(dp), intent(out) :: vol(:)
+        real(dp) :: h
+        integer :: t
+
+        h = rgarch_h0(y, x_range, params)
+        do t = 1, size(y)
+            h = max(h, 1.0e-12_dp)
+            vol(t) = sqrt(trading_days * h) * 100.0_dp
+            h = params%omega + params%alpha*x_range(t) + params%beta*h
+        end do
+    end subroutine rgarch_vol_forecast
+
+    real(dp) function rgarch_h0(y, x_range, params)
+        real(dp), intent(in) :: y(:), x_range(:)
+        type(garch_params_t), intent(in) :: params
+
+        rgarch_h0 = max((params%omega + params%alpha*sum(x_range)/real(size(x_range), dp)) / &
+            max(1.0_dp - params%beta, 1.0e-8_dp), sum(y**2)/real(size(y), dp), 1.0e-12_dp)
+    end function rgarch_h0
+
+    real(dp) function nagarch_range_h0(y, x_range, params, persist)
+        real(dp), intent(in) :: y(:), x_range(:), persist
+        type(garch_params_t), intent(in) :: params
+
+        nagarch_range_h0 = max((params%omega + params%gamma*sum(x_range)/real(size(x_range), dp)) / &
+            max(1.0_dp - persist, 1.0e-8_dp), sum(y**2)/real(size(y), dp), 1.0e-12_dp)
+    end function nagarch_range_h0
+
+    subroutine summarize_vol_forecast(vol, return_dates, med, avg, sig, ekurt, vmin, vmax, first, last, date_min, date_max)
+        real(dp), intent(in) :: vol(:)
+        integer,  intent(in) :: return_dates(:)
+        real(dp), intent(out) :: med, avg, sig, ekurt, vmin, vmax, first, last
+        integer,  intent(out) :: date_min, date_max
+        real(dp), allocatable :: sorted(:)
+        real(dp) :: rn, dz, m2, m4
+        integer :: n, t, imin, imax
+
+        n = size(vol)
+        rn = real(n, dp)
+        allocate(sorted(n))
+        sorted = vol
+        call sort_real(sorted)
+        if (mod(n, 2) == 0) then
+            med = 0.5_dp * (sorted(n/2) + sorted(n/2+1))
+        else
+            med = sorted((n+1)/2)
+        end if
+
+        avg = sum(vol) / rn
+        m2 = 0.0_dp
+        m4 = 0.0_dp
+        imin = 1
+        imax = 1
+        do t = 1, n
+            dz = vol(t) - avg
+            m2 = m2 + dz**2
+            m4 = m4 + dz**4
+            if (vol(t) < vol(imin)) imin = t
+            if (vol(t) > vol(imax)) imax = t
+        end do
+        m2 = m2 / rn
+        m4 = m4 / rn
+        sig = sqrt(m2)
+        ekurt = m4 / max(m2**2, 1.0e-24_dp) - 3.0_dp
+        vmin = vol(imin)
+        vmax = vol(imax)
+        first = vol(1)
+        last = vol(n)
+        date_min = return_dates(imin)
+        date_max = return_dates(imax)
+        deallocate(sorted)
+    end subroutine summarize_vol_forecast
+
+    subroutine print_vol_forecast_table()
+        write(*,'(/,A)') "Volatility forecast properties:"
+        write(*,'(A)') "Model            Asset       median      mean        sd     ekurt       min       max     first      last date_of_min date_of_max"
+        write(*,'(A)') repeat("-", 128)
+        do icol = 1, ncols
+            do imod = 1, n_model
+                if (.not. vf_have(icol,imod)) cycle
+                write(*,'(A16,1X,A9,8F10.3,2(1X,A10))') trim(vf_model(imod)), trim(col_names(icol)), &
+                    vf_median(icol,imod), vf_mean_arr(icol,imod), vf_sd_arr(icol,imod), vf_ekurt_arr(icol,imod), &
+                    vf_min_arr(icol,imod), vf_max_arr(icol,imod), vf_first_arr(icol,imod), vf_last_arr(icol,imod), &
+                    date_label(vf_date_min(icol,imod)), date_label(vf_date_max(icol,imod))
+            end do
+        end do
+    end subroutine print_vol_forecast_table
+
+    subroutine print_fit_assets()
+        integer :: i
+
+        if (fit_all_assets) then
+            write(*,'(A)') "Fitting GARCH models for assets: all price-file assets"
+        else
+            write(*,'(A)', advance='no') "Fitting GARCH models for assets:"
+            do i = 1, size(fit_assets)
+                write(*,'(1X,A)', advance='no') trim(fit_assets(i))
+            end do
+            write(*,*)
+        end if
+    end subroutine print_fit_assets
+
+end program xfit_garch_ohlc_iv_returns
