@@ -10,14 +10,14 @@ program xfit_garch_ohlc_iv_returns
     use nagarch_mod,    only: nagarch_set_news_impact
     use garch_types_mod, only: garch_params_t, garch_fit_result_t
     use vol_forecast_compare_mod, only: print_implied_vol_correlations
-    use garch_fit_mod,  only: fit_symm_garch, fit_nagarch, fit_rgarch, fit_regarch1, fit_nagarch_range, &
+    use garch_fit_mod,  only: fit_symm_garch, fit_nagarch, fit_rgarch, fit_regarch1, fit_regarch2, fit_nagarch_range, &
                               fit_gjr, fit_fgarch_twist, fit_ewma, &
                               fit_aewma_nag, fit_aewma_twist, &
                               garch_skew_kurt, nagarch_skew_kurt, gjr_skew_kurt, &
-                              rgarch_skew_kurt, regarch1_skew_kurt, nagarch_range_skew_kurt, &
+                              rgarch_skew_kurt, regarch1_skew_kurt, regarch2_skew_kurt, nagarch_range_skew_kurt, &
                               ewma_skew_kurt, aewma_nag_skew_kurt, aewma_twist_skew_kurt, &
                               symm_garch_persist, nagarch_persist, gjr_persist, &
-                              rgarch_persist, regarch1_persist, fgarch_twist_persist, ewma_persist, &
+                              rgarch_persist, regarch1_persist, regarch2_persist, fgarch_twist_persist, ewma_persist, &
                               aewma_nag_persist, aewma_twist_persist
     implicit none
 
@@ -33,7 +33,7 @@ program xfit_garch_ohlc_iv_returns
     logical,  parameter :: standardize_log_return_by_prior_iv = .true.
     character(len=16), parameter :: models(*) = [character(len=16) :: &
         "EWMA", "AEWMA_NAG", "AEWMA_TWIST", "SYMM_GARCH", "NAGARCH", "GJR_GARCH", "FGTWIST", "REGARCH1", &
-        "OHLC_SYMM", "OHLC_NAGARCH", "OHLC_RGARCH", "OHLC_NAG_RANGE", "OHLC_GJR", "OHLC_FGTWIST"]
+        "REGARCH2", "OHLC_SYMM", "OHLC_NAGARCH", "OHLC_RGARCH", "OHLC_NAG_RANGE", "OHLC_GJR", "OHLC_FGTWIST"]
     character(len=16), parameter :: fit_assets(*) = [character(len=16) :: "SPY"]
     character(len=16), parameter :: asset_iv_assets(*) = [character(len=16) :: "SPY"]
     character(len=16), parameter :: asset_iv_indices(*) = [character(len=16) :: "VIX"]
@@ -111,7 +111,7 @@ program xfit_garch_ohlc_iv_returns
     write(*,'(A,A)') "Implied vol file: ", trim(implied_vol_file)
     write(*,'(A,F7.3)') "OHLC CO/OC variance forecast correlation: ", co_oc_corr
     write(*,'(A)') "OHLC model logL/AIC/BIC use separate CO and OC likelihoods; compare those criteria to CC rows with care."
-    write(*,'(A)') "REGARCH1 logL/AIC/BIC use the log-range likelihood and are excluded from AIC/BIC ranks and wins."
+    write(*,'(A)') "REGARCH1/REGARCH2 logL/AIC/BIC use the log-range likelihood and are excluded from AIC/BIC ranks and wins."
     call print_fit_assets()
     write(*,'(A)') "Model            Asset        omega   alpha   gamma    beta   theta   twist   scale  persist  vol_ann%        logL         AIC         BIC  iter conv    skew   ekurt AIC_rank BIC_rank"
     write(*,'(A)') repeat("-", 180)
@@ -194,6 +194,13 @@ program xfit_garch_ohlc_iv_returns
                 np = 4
                 call regarch1_skew_kurt(ret, log_range, params, skew, ekurt)
                 model = "REGARCH1"
+            case ("REGARCH2", "RANGE_EGARCH2")
+                call fit_regarch2(ret, log_range, max_iter, gtol, fopt, params, niter, converged)
+                persist = regarch2_persist(params)
+                vol_ann = regarch2_vol_ann(ret, log_range, params)
+                np = 7
+                call regarch2_skew_kurt(ret, log_range, params, skew, ekurt)
+                model = "REGARCH2"
             case ("OHLC_SYMM", "OHLC_SYMM_GARCH")
                 call fit_ohlc_model("SYMM_GARCH", ret_co, ret_oc, fopt, params, vol_ann, persist, &
                                     skew, ekurt, niter, converged, np, vol_forecast)
@@ -228,6 +235,8 @@ program xfit_garch_ohlc_iv_returns
             bic = log(real(nobs, dp)) * real(np, dp) - 2.0_dp * logl
             if (trim(model) == "REGARCH1") then
                 call regarch1_vol_forecast(ret, log_range, params, vol_forecast)
+            else if (trim(model) == "REGARCH2") then
+                call regarch2_vol_forecast(ret, log_range, params, vol_forecast)
             else if (index(trim(model), "OHLC_") /= 1) then
                 call model_vol_forecast(trim(model), ret, params, persist, vol_forecast)
             end if
@@ -266,7 +275,7 @@ program xfit_garch_ohlc_iv_returns
             rows(nfit)%converged = converged
             rows(nfit)%skew = skew
             rows(nfit)%ekurt = ekurt
-            row_comparable(nfit) = trim(model) /= "REGARCH1"
+            row_comparable(nfit) = trim(model) /= "REGARCH1" .and. trim(model) /= "REGARCH2"
             param_count(imod) = np
         end do
 
@@ -628,6 +637,28 @@ contains
         end do
     end subroutine regarch1_vol_forecast
 
+    subroutine regarch2_vol_forecast(y, x_log_range, params, vol)
+        real(dp), intent(in) :: y(:), x_log_range(:)
+        type(garch_params_t), intent(in) :: params
+        real(dp), intent(out) :: vol(:)
+        real(dp) :: lh, lq, sig, z, x_range, lh_next, lq_next
+        integer :: t
+
+        lh = regarch1_h0(x_log_range)
+        lq = lh
+        do t = 1, size(y)
+            sig = exp(lh)
+            vol(t) = sqrt(trading_days) * sig * 100.0_dp
+            z = y(t) / max(sig, 1.0e-8_dp)
+            x_range = (x_log_range(t) - 0.43_dp - lh) / 0.29_dp
+            lh_next = params%beta*lh + (1.0_dp - params%beta)*lq + params%alpha*x_range + params%gamma*z
+            lq_next = (1.0_dp - params%scale)*params%omega + params%scale*lq + &
+                      params%theta*x_range + params%twist*z
+            lh = lh_next
+            lq = lq_next
+        end do
+    end subroutine regarch2_vol_forecast
+
     real(dp) function regarch1_vol_ann(y, x_log_range, params)
         real(dp), intent(in) :: y(:), x_log_range(:)
         type(garch_params_t), intent(in) :: params
@@ -638,6 +669,17 @@ contains
         regarch1_vol_ann = sqrt(sum(vol**2) / real(size(vol), dp))
         deallocate(vol)
     end function regarch1_vol_ann
+
+    real(dp) function regarch2_vol_ann(y, x_log_range, params)
+        real(dp), intent(in) :: y(:), x_log_range(:)
+        type(garch_params_t), intent(in) :: params
+        real(dp), allocatable :: vol(:)
+
+        allocate(vol(size(x_log_range)))
+        call regarch2_vol_forecast(y, x_log_range, params, vol)
+        regarch2_vol_ann = sqrt(sum(vol**2) / real(size(vol), dp))
+        deallocate(vol)
+    end function regarch2_vol_ann
 
     real(dp) function regarch1_h0(x_log_range)
         real(dp), intent(in) :: x_log_range(:)
