@@ -11,16 +11,17 @@ program xfit_garch_ohlc_iv_returns
     use garch_types_mod, only: garch_params_t, garch_fit_result_t
     use vol_forecast_compare_mod, only: print_implied_vol_correlations
     use garch_fit_mod,  only: fit_symm_garch, fit_nagarch, fit_rgarch, fit_regarch1, fit_regarch2, &
-                              fit_rgarch_meas, fit_nagarch_range, fit_fgarch_twist_range, &
+                              fit_rgarch_meas, fit_carr_park, fit_nagarch_range, fit_fgarch_twist_range, &
                               fit_gjr, fit_fgarch_twist, fit_ewma, &
                               fit_aewma_nag, fit_aewma_twist, &
                               garch_skew_kurt, nagarch_skew_kurt, gjr_skew_kurt, &
                               rgarch_skew_kurt, regarch1_skew_kurt, regarch2_skew_kurt, &
-                              rgarch_meas_skew_kurt, nagarch_range_skew_kurt, fgarch_twist_range_skew_kurt, &
+                              rgarch_meas_skew_kurt, carr_park_skew_kurt, &
+                              nagarch_range_skew_kurt, fgarch_twist_range_skew_kurt, &
                               ewma_skew_kurt, aewma_nag_skew_kurt, aewma_twist_skew_kurt, &
                               symm_garch_persist, nagarch_persist, gjr_persist, &
                               rgarch_persist, regarch1_persist, regarch2_persist, rgarch_meas_persist, &
-                              fgarch_twist_persist, ewma_persist, &
+                              carr_park_persist, fgarch_twist_persist, ewma_persist, &
                               aewma_nag_persist, aewma_twist_persist
     implicit none
 
@@ -38,8 +39,8 @@ program xfit_garch_ohlc_iv_returns
     logical,  parameter :: standardize_log_return_by_prior_iv = .true.
     character(len=model_len), parameter :: models(*) = [character(len=model_len) :: &
         "EWMA", "AEWMA_NAG", "AEWMA_TWIST", "SYMM_GARCH", "NAGARCH", "GJR_GARCH", "FGTWIST", "REGARCH1", &
-        "REGARCH2", "OHLC_SYMM", "OHLC_NAGARCH", "OHLC_RGARCH", "OHLC_NAG_RANGE", "OHLC_FGTW_RANGE", &
-        "OHLC_GJR", "OHLC_FGTWIST"] ! , "RGARCH_MEAS" 
+        "REGARCH2", "CARR_PARK", "OHLC_SYMM", "OHLC_NAGARCH", "OHLC_RGARCH", "OHLC_NAG_RANGE", &
+        "OHLC_FGTW_RANGE", "OHLC_GJR", "OHLC_FGTWIST"] ! , "RGARCH_MEAS" 
     character(len=symbol_len), parameter :: fit_assets(*) = [character(len=symbol_len) :: "SPY"]
     character(len=symbol_len), parameter :: asset_iv_assets(*) = [character(len=symbol_len) :: "SPY"]
     character(len=symbol_len), parameter :: asset_iv_indices(*) = [character(len=symbol_len) :: "VIX"]
@@ -128,6 +129,7 @@ program xfit_garch_ohlc_iv_returns
     write(*,'(A)') "OHLC model logL/AIC/BIC use separate CO and OC likelihoods; compare those criteria to CC rows with care."
     write(*,'(A)') "REGARCH1/REGARCH2 logL/AIC/BIC use the log-range likelihood and are excluded from AIC/BIC ranks and wins."
     write(*,'(A)') "RGARCH_MEAS logL/AIC/BIC use joint return/log-range likelihood and are excluded from AIC/BIC ranks and wins."
+    write(*,'(A)') "CARR_PARK logL/AIC/BIC use the Parkinson-range likelihood and are excluded from AIC/BIC ranks and wins."
     call print_fit_assets()
     write(*,'(A)') "Model            Asset        omega   alpha   gamma    beta   theta   twist   scale  persist  vol_ann%        logL         AIC         BIC  iter conv    skew   ekurt AIC_rank BIC_rank"
     write(*,'(A)') repeat("-", 180)
@@ -225,6 +227,13 @@ program xfit_garch_ohlc_iv_returns
                 np = 9
                 call rgarch_meas_skew_kurt(ret, log_range, params, skew, ekurt)
                 model = "RGARCH_MEAS"
+            case ("CARR_PARK", "GARCH_PARK_R", "CARR")
+                call fit_carr_park(range_var, max_iter, gtol, fopt, params, niter, converged)
+                persist = carr_park_persist(params)
+                vol_ann = carr_park_vol_ann(range_var, params)
+                np = 3
+                call carr_park_skew_kurt(ret, range_var, params, skew, ekurt)
+                model = "CARR_PARK"
             case ("OHLC_SYMM", "OHLC_SYMM_GARCH")
                 call fit_ohlc_model("SYMM_GARCH", ret_co, ret_oc, fopt, params, vol_ann, persist, &
                                     skew, ekurt, niter, converged, np, vol_forecast)
@@ -279,6 +288,8 @@ program xfit_garch_ohlc_iv_returns
                 call regarch2_vol_forecast(ret, log_range, params, vol_forecast)
             else if (trim(model) == "RGARCH_MEAS") then
                 call rgarch_meas_vol_forecast(ret, log_range, params, vol_forecast)
+            else if (trim(model) == "CARR_PARK") then
+                call carr_park_vol_forecast(range_var, params, vol_forecast)
             else if (index(trim(model), "OHLC_") /= 1) then
                 call model_vol_forecast(trim(model), ret, params, persist, vol_forecast)
             end if
@@ -318,7 +329,7 @@ program xfit_garch_ohlc_iv_returns
             rows(nfit)%skew = skew
             rows(nfit)%ekurt = ekurt
             row_comparable(nfit) = trim(model) /= "REGARCH1" .and. trim(model) /= "REGARCH2" .and. &
-                                   trim(model) /= "RGARCH_MEAS"
+                                   trim(model) /= "RGARCH_MEAS" .and. trim(model) /= "CARR_PARK"
             param_count(imod) = np
         end do
 
@@ -769,6 +780,21 @@ contains
         end do
     end subroutine rgarch_vol_forecast
 
+    subroutine carr_park_vol_forecast(x_range, params, vol)
+        real(dp), intent(in) :: x_range(:)
+        type(garch_params_t), intent(in) :: params
+        real(dp), intent(out) :: vol(:)
+        real(dp) :: h
+        integer :: t
+
+        h = carr_park_h0(x_range, params)
+        do t = 1, size(x_range)
+            h = max(h, 1.0e-12_dp)
+            vol(t) = sqrt(trading_days * h) * 100.0_dp
+            h = params%omega + params%alpha*x_range(t) + params%beta*h
+        end do
+    end subroutine carr_park_vol_forecast
+
     subroutine regarch1_vol_forecast(y, x_log_range, params, vol)
         real(dp), intent(in) :: y(:), x_log_range(:)
         type(garch_params_t), intent(in) :: params
@@ -859,6 +885,17 @@ contains
         deallocate(vol)
     end function rgarch_meas_vol_ann
 
+    real(dp) function carr_park_vol_ann(x_range, params)
+        real(dp), intent(in) :: x_range(:)
+        type(garch_params_t), intent(in) :: params
+        real(dp), allocatable :: vol(:)
+
+        allocate(vol(size(x_range)))
+        call carr_park_vol_forecast(x_range, params, vol)
+        carr_park_vol_ann = sqrt(sum(vol**2) / real(size(vol), dp))
+        deallocate(vol)
+    end function carr_park_vol_ann
+
     real(dp) function regarch1_h0(x_log_range)
         real(dp), intent(in) :: x_log_range(:)
 
@@ -872,6 +909,16 @@ contains
         rgarch_h0 = max((params%omega + params%alpha*sum(x_range)/real(size(x_range), dp)) / &
             max(1.0_dp - params%beta, 1.0e-8_dp), sum(y**2)/real(size(y), dp), 1.0e-12_dp)
     end function rgarch_h0
+
+    real(dp) function carr_park_h0(x_range, params)
+        real(dp), intent(in) :: x_range(:)
+        type(garch_params_t), intent(in) :: params
+        real(dp) :: xbar
+
+        xbar = sum(max(x_range, 1.0e-12_dp)) / real(size(x_range), dp)
+        carr_park_h0 = max((params%omega + params%alpha*xbar) / &
+            max(1.0_dp - params%beta, 1.0e-8_dp), xbar, 1.0e-12_dp)
+    end function carr_park_h0
 
     real(dp) function nagarch_range_h0(y, x_range, params, persist)
         real(dp), intent(in) :: y(:), x_range(:), persist
