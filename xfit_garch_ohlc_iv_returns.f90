@@ -39,7 +39,7 @@ program xfit_garch_ohlc_iv_returns
     logical,  parameter :: standardize_log_return_by_prior_iv = .true.
     character(len=model_len), parameter :: models(*) = [character(len=model_len) :: &
         "EWMA", "AEWMA_NAG", "AEWMA_TWIST", "SYMM_GARCH", "NAGARCH", "GJR_GARCH", "FGTWIST", "REGARCH1", &
-        "REGARCH2", "CARR_PARK", "OHLC_SYMM", "OHLC_NAGARCH", "OHLC_RGARCH", "OHLC_NAG_RANGE", &
+        "REGARCH2", "CARR_PARK", "CARR_GK", "OHLC_SYMM", "OHLC_NAGARCH", "OHLC_RGARCH", "OHLC_NAG_RANGE", &
         "OHLC_FGTW_RANGE", "OHLC_GJR", "OHLC_FGTWIST"] ! , "RGARCH_MEAS" 
     character(len=symbol_len), parameter :: fit_assets(*) = [character(len=symbol_len) :: "SPY"]
     character(len=symbol_len), parameter :: asset_iv_assets(*) = [character(len=symbol_len) :: "SPY"]
@@ -50,7 +50,7 @@ program xfit_garch_ohlc_iv_returns
     integer, allocatable :: dates(:), iv_dates(:)
     character(len=32), allocatable :: col_names(:), iv_col_names(:)
     real(dp), allocatable :: prices(:,:), open_prices(:,:), high_prices(:,:), low_prices(:,:), iv_values(:,:)
-    real(dp), allocatable :: ret(:), ret_co(:), ret_oc(:), range_var(:), log_range(:)
+    real(dp), allocatable :: ret(:), ret_co(:), ret_oc(:), range_var(:), gk_var(:), log_range(:)
     type(garch_fit_result_t) :: rows(n_model)
     integer :: row_aic_rank(n_model), row_bic_rank(n_model), row_model_idx(n_model)
     logical :: row_comparable(n_model)
@@ -106,7 +106,7 @@ program xfit_garch_ohlc_iv_returns
     nprices = size(prices, 1)
     ncols   = size(prices, 2)
     nobs    = nprices - 1
-    allocate(ret(nobs), ret_co(nobs), ret_oc(nobs), range_var(nobs), log_range(nobs), vol_forecast(nobs), &
+    allocate(ret(nobs), ret_co(nobs), ret_oc(nobs), range_var(nobs), gk_var(nobs), log_range(nobs), vol_forecast(nobs), &
              vol_forecasts(nobs,ncols,n_model))
     allocate(extra_series(nprices,ncols,size(extra_series_names)))
     vol_forecasts = 0.0_dp
@@ -129,7 +129,7 @@ program xfit_garch_ohlc_iv_returns
     write(*,'(A)') "OHLC model logL/AIC/BIC use separate CO and OC likelihoods; compare those criteria to CC rows with care."
     write(*,'(A)') "REGARCH1/REGARCH2 logL/AIC/BIC use the log-range likelihood and are excluded from AIC/BIC ranks and wins."
     write(*,'(A)') "RGARCH_MEAS logL/AIC/BIC use joint return/log-range likelihood and are excluded from AIC/BIC ranks and wins."
-    write(*,'(A)') "CARR_PARK logL/AIC/BIC use the Parkinson-range likelihood and are excluded from AIC/BIC ranks and wins."
+    write(*,'(A)') "CARR_PARK/CARR_GK logL/AIC/BIC use range-estimator likelihoods and are excluded from AIC/BIC ranks and wins."
     call print_fit_assets()
     write(*,'(A)') "Model            Asset        omega   alpha   gamma    beta   theta   twist   scale  persist  vol_ann%        logL         AIC         BIC  iter conv    skew   ekurt AIC_rank BIC_rank"
     write(*,'(A)') repeat("-", 180)
@@ -144,6 +144,9 @@ program xfit_garch_ohlc_iv_returns
         ret_oc = log(prices(2:nprices,icol) / open_prices(2:nprices,icol))
         ret_oc = ret_oc - mean(ret_oc)
         range_var = (log(high_prices(2:nprices,icol) / low_prices(2:nprices,icol)))**2 / (4.0_dp*log(2.0_dp))
+        gk_var = max(0.5_dp*(log(high_prices(2:nprices,icol) / low_prices(2:nprices,icol)))**2 - &
+                     (2.0_dp*log(2.0_dp) - 1.0_dp)* &
+                     (log(prices(2:nprices,icol) / open_prices(2:nprices,icol)))**2, 1.0e-12_dp)
         log_range = log(max(log(high_prices(2:nprices,icol) / low_prices(2:nprices,icol)), 1.0e-12_dp))
         nfit = 0
 
@@ -234,6 +237,13 @@ program xfit_garch_ohlc_iv_returns
                 np = 3
                 call carr_park_skew_kurt(ret, range_var, params, skew, ekurt)
                 model = "CARR_PARK"
+            case ("CARR_GK", "GARCH_GK_R")
+                call fit_carr_park(gk_var, max_iter, gtol, fopt, params, niter, converged)
+                persist = carr_park_persist(params)
+                vol_ann = carr_park_vol_ann(gk_var, params)
+                np = 3
+                call carr_park_skew_kurt(ret, gk_var, params, skew, ekurt)
+                model = "CARR_GK"
             case ("OHLC_SYMM", "OHLC_SYMM_GARCH")
                 call fit_ohlc_model("SYMM_GARCH", ret_co, ret_oc, fopt, params, vol_ann, persist, &
                                     skew, ekurt, niter, converged, np, vol_forecast)
@@ -290,6 +300,8 @@ program xfit_garch_ohlc_iv_returns
                 call rgarch_meas_vol_forecast(ret, log_range, params, vol_forecast)
             else if (trim(model) == "CARR_PARK") then
                 call carr_park_vol_forecast(range_var, params, vol_forecast)
+            else if (trim(model) == "CARR_GK") then
+                call carr_park_vol_forecast(gk_var, params, vol_forecast)
             else if (index(trim(model), "OHLC_") /= 1) then
                 call model_vol_forecast(trim(model), ret, params, persist, vol_forecast)
             end if
@@ -329,7 +341,8 @@ program xfit_garch_ohlc_iv_returns
             rows(nfit)%skew = skew
             rows(nfit)%ekurt = ekurt
             row_comparable(nfit) = trim(model) /= "REGARCH1" .and. trim(model) /= "REGARCH2" .and. &
-                                   trim(model) /= "RGARCH_MEAS" .and. trim(model) /= "CARR_PARK"
+                                   trim(model) /= "RGARCH_MEAS" .and. trim(model) /= "CARR_PARK" .and. &
+                                   trim(model) /= "CARR_GK"
             param_count(imod) = np
         end do
 
