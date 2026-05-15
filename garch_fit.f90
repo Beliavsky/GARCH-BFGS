@@ -14,7 +14,7 @@ module garch_fit_mod
     implicit none
     private
 
-    public :: fit_symm_garch, fit_qgarch, fit_figarch, fit_nagarch, fit_rgarch, fit_carr_park
+    public :: fit_symm_garch, fit_qgarch, fit_figarch, fit_fi_nagarch, fit_nagarch, fit_rgarch, fit_carr_park
     public :: fit_regarch1, fit_regarch2, fit_rgarch_meas
     public :: fit_nagarch_range, fit_gjr, fit_gjr_signed, fit_egarch, fit_aparch, fit_harch
     public :: fit_riskmetrics2006, fit_midas_hyperbolic, fit_midas_hyperbolic_asym
@@ -24,13 +24,15 @@ module garch_fit_mod
     public :: regarch1_skew_kurt, regarch2_skew_kurt
     public :: rgarch_meas_skew_kurt
     public :: nagarch_range_skew_kurt
-    public :: gjr_skew_kurt, egarch_skew_kurt, aparch_skew_kurt, harch_skew_kurt, figarch_skew_kurt
+    public :: gjr_skew_kurt, egarch_skew_kurt, aparch_skew_kurt, harch_skew_kurt
+    public :: figarch_skew_kurt, fi_nagarch_skew_kurt
     public :: riskmetrics2006_skew_kurt, midas_hyperbolic_skew_kurt, midas_hyperbolic_asym_skew_kurt
     public :: ewma_skew_kurt
     public :: aewma_nag_skew_kurt, aewma_twist_skew_kurt, fgarch_twist_range_skew_kurt
-    public :: symm_garch_persist, qgarch_persist, figarch_persist, nagarch_persist, gjr_persist, egarch_persist, aparch_persist, harch_persist
+    public :: symm_garch_persist, qgarch_persist, figarch_persist, fi_nagarch_persist, nagarch_persist
+    public :: gjr_persist, egarch_persist, aparch_persist, harch_persist
     public :: riskmetrics2006_persist, midas_hyperbolic_persist, midas_hyperbolic_asym_persist
-    public :: aparch_mean_variance, qgarch_mean_variance, figarch_variance
+    public :: aparch_mean_variance, qgarch_mean_variance, figarch_variance, fi_nagarch_variance
     public :: riskmetrics2006_variance
     public :: fgarch_twist_moment, fgarch_twist_persist, ewma_persist
     public :: aewma_nag_persist, aewma_twist_persist, rgarch_persist, carr_park_persist
@@ -44,6 +46,7 @@ module garch_fit_mod
     integer, parameter :: symm_garch_np = 3
     integer, parameter :: qgarch_np = 4
     integer, parameter :: figarch_np = 4
+    integer, parameter :: fi_nagarch_np = 5
     integer, parameter :: figarch_trunc_lag = 1000
     integer, parameter :: nagarch_np = 4
     integer, parameter :: rgarch_np = 3
@@ -337,6 +340,43 @@ contains
         params = garch_params_t()
         call figarch_transform(p_best, params%omega, params%alpha, params%theta, params%beta)
     end subroutine fit_figarch
+
+    subroutine fit_fi_nagarch(y, max_iter, gtol, f_best, params, niter_best, converged_best)
+        real(dp), intent(in)  :: y(:), gtol
+        integer,  intent(in)  :: max_iter
+        real(dp), intent(out) :: f_best
+        type(garch_params_t), intent(out) :: params
+        integer,  intent(out) :: niter_best
+        logical,  intent(out) :: converged_best
+        real(dp), parameter :: start_shift(n_start) = [0.0_dp, 0.5_dp, -0.5_dp, 1.0_dp]
+        type(garch_params_t) :: fig_params
+        real(dp) :: p(fi_nagarch_np), p0(fi_nagarch_np), p_best(fi_nagarch_np), f_try, f_fig
+        integer :: istart, niter_try, niter_fig
+        logical :: converged_try, converged_fig
+
+        call fit_figarch(y, max_iter, gtol, f_fig, fig_params, niter_fig, converged_fig)
+        call figarch_set_data(y)
+        f_best = huge(1.0_dp)
+        p_best = 0.0_dp
+        niter_best = 0
+        converged_best = .false.
+
+        do istart = 1, n_start
+            call fi_nagarch_inv_transform(fig_params%omega, fig_params%alpha, fig_params%theta, &
+                                          fig_params%beta, start_shift(istart), p0)
+            p = p0
+            call bfgs_minimize(fi_nagarch_obj, p, fi_nagarch_np, max_iter, gtol, f_try, niter_try, converged_try)
+            if (f_try < f_best) then
+                f_best = f_try
+                p_best = p
+                niter_best = niter_try + niter_fig
+                converged_best = converged_try
+            end if
+        end do
+
+        params = garch_params_t()
+        call fi_nagarch_transform(p_best, params%omega, params%alpha, params%theta, params%beta, params%twist)
+    end subroutine fit_fi_nagarch
 
     subroutine fit_harch(y, max_iter, gtol, f_best, params, niter_best, converged_best)
         real(dp), intent(in)  :: y(:), gtol
@@ -1205,6 +1245,22 @@ contains
         p(4) = log(bb / (1.0_dp - bb))
     end subroutine figarch_inv_transform
 
+    subroutine fi_nagarch_transform(p, omega, phi, d, beta, shift)
+        real(dp), intent(in)  :: p(fi_nagarch_np)
+        real(dp), intent(out) :: omega, phi, d, beta, shift
+
+        call figarch_transform(p(1:figarch_np), omega, phi, d, beta)
+        shift = p(5)
+    end subroutine fi_nagarch_transform
+
+    subroutine fi_nagarch_inv_transform(omega, phi, d, beta, shift, p)
+        real(dp), intent(in)  :: omega, phi, d, beta, shift
+        real(dp), intent(out) :: p(fi_nagarch_np)
+
+        call figarch_inv_transform(omega, phi, d, beta, p(1:figarch_np))
+        p(5) = shift
+    end subroutine fi_nagarch_inv_transform
+
     subroutine figarch_weights(phi, d, beta, lambda)
         real(dp), intent(in)  :: phi, d, beta
         real(dp), intent(out) :: lambda(:)
@@ -1292,6 +1348,39 @@ contains
         deallocate(lambda)
     end subroutine figarch_variance
 
+    subroutine fi_nagarch_variance(y, params, variance)
+        real(dp), intent(in) :: y(:)
+        type(garch_params_t), intent(in) :: params
+        real(dp), intent(out) :: variance(:)
+        real(dp), allocatable :: lambda(:), news(:)
+        real(dp) :: omega_tilde, backcast, bc_weight, h, sqrth, scale
+        integer :: t, i, n, m
+
+        n = size(y)
+        m = figarch_trunc_lag
+        allocate(lambda(m), news(n))
+        call figarch_weights(params%alpha, params%theta, params%beta, lambda)
+        omega_tilde = params%omega / max(1.0_dp - params%beta, 1.0e-8_dp)
+        backcast = figarch_backcast(y)
+        scale = 1.0_dp + params%twist**2
+
+        do t = 1, n
+            bc_weight = 0.0_dp
+            do i = t, m
+                bc_weight = bc_weight + lambda(i)
+            end do
+            h = omega_tilde + bc_weight*backcast
+            do i = 1, min(t - 1, m)
+                h = h + lambda(i)*news(t - i)
+            end do
+            h = max(h, 1.0e-12_dp)
+            variance(t) = h
+            sqrth = sqrt(h)
+            news(t) = (y(t) - params%twist*sqrth)**2 / scale
+        end do
+        deallocate(lambda, news)
+    end subroutine fi_nagarch_variance
+
     real(dp) function figarch_value(p)
         real(dp), intent(in) :: p(figarch_np)
         type(garch_params_t) :: params
@@ -1308,6 +1397,23 @@ contains
         figarch_value = figarch_value / real(figarch_nobs, dp)
         deallocate(variance)
     end function figarch_value
+
+    real(dp) function fi_nagarch_value(p)
+        real(dp), intent(in) :: p(fi_nagarch_np)
+        type(garch_params_t) :: params
+        real(dp), allocatable :: variance(:)
+        integer :: t
+
+        call fi_nagarch_transform(p, params%omega, params%alpha, params%theta, params%beta, params%twist)
+        allocate(variance(figarch_nobs))
+        call fi_nagarch_variance(figarch_obs, params, variance)
+        fi_nagarch_value = real(figarch_nobs, dp) * log_sqrt_2pi
+        do t = 1, figarch_nobs
+            fi_nagarch_value = fi_nagarch_value + 0.5_dp * (log(variance(t)) + figarch_obs(t)**2 / variance(t))
+        end do
+        fi_nagarch_value = fi_nagarch_value / real(figarch_nobs, dp)
+        deallocate(variance)
+    end function fi_nagarch_value
 
     subroutine figarch_obj(p, np, f, g)
         integer,  intent(in)  :: np
@@ -1385,6 +1491,27 @@ contains
         g = g / real(figarch_nobs, dp)
         deallocate(lambda, dl_dphi, dl_dd, dl_dbeta)
     end subroutine figarch_obj
+
+    subroutine fi_nagarch_obj(p, np, f, g)
+        integer,  intent(in)  :: np
+        real(dp), intent(in)  :: p(np)
+        real(dp), intent(out) :: f
+        real(dp), intent(out) :: g(np)
+        real(dp) :: pp(fi_nagarch_np), fp, fm, step
+        integer :: i
+
+        f = fi_nagarch_value(p)
+        do i = 1, np
+            step = 1.0e-5_dp * max(abs(p(i)), 1.0_dp)
+            pp = p
+            pp(i) = p(i) + step
+            fp = fi_nagarch_value(pp)
+            pp = p
+            pp(i) = p(i) - step
+            fm = fi_nagarch_value(pp)
+            g(i) = (fp - fm) / (2.0_dp*step)
+        end do
+    end subroutine fi_nagarch_obj
 
     subroutine harch_transform(p, omega, alpha1, alpha5, alpha22)
         real(dp), intent(in)  :: p(harch_np)
@@ -2261,6 +2388,23 @@ contains
         deallocate(variance, zz)
     end subroutine figarch_skew_kurt
 
+    subroutine fi_nagarch_skew_kurt(y, params, skew, ekurt)
+        real(dp), intent(in)  :: y(:)
+        type(garch_params_t), intent(in) :: params
+        real(dp), intent(out) :: skew, ekurt
+        real(dp), allocatable :: variance(:), zz(:)
+        integer :: t, n
+
+        n = size(y)
+        allocate(variance(n), zz(n))
+        call fi_nagarch_variance(y, params, variance)
+        do t = 1, n
+            zz(t) = y(t) / sqrt(max(variance(t), 1.0e-12_dp))
+        end do
+        call moments(zz, n, skew, ekurt)
+        deallocate(variance, zz)
+    end subroutine fi_nagarch_skew_kurt
+
     subroutine riskmetrics2006_skew_kurt(y, skew, ekurt)
         real(dp), intent(in)  :: y(:)
         real(dp), intent(out) :: skew, ekurt
@@ -2489,6 +2633,11 @@ contains
         figarch_persist = sum(lambda)
         deallocate(lambda)
     end function figarch_persist
+
+    real(dp) function fi_nagarch_persist(params)
+        type(garch_params_t), intent(in) :: params
+        fi_nagarch_persist = figarch_persist(params)
+    end function fi_nagarch_persist
 
     real(dp) function riskmetrics2006_persist()
         riskmetrics2006_persist = 1.0_dp
