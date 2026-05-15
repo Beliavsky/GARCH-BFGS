@@ -1,7 +1,7 @@
 ! Fit the volatility models common to Python arch and this Fortran code.
 ! Reads daily prices, computes demeaned log returns, and fits ARCH(1),
 ! symmetric GARCH(1,1), GJR-GARCH(1,1), EGARCH(1,1), APARCH(1,1), and
-! HARCH(1,5,22) with Normal errors.
+! HARCH(1,5,22), RiskMetrics 2006, and MIDAS Hyperbolic with Normal errors.
 
 program xfit_arch_common
     use kind_mod,       only: dp
@@ -10,9 +10,12 @@ program xfit_arch_common
     use stats_mod,      only: mean
     use garch_types_mod, only: garch_params_t
     use garch_fit_mod,  only: fit_symm_garch, fit_gjr_signed, fit_egarch, fit_aparch, fit_harch, &
+                              fit_riskmetrics2006, &
+                              fit_midas_hyperbolic, &
                               garch_skew_kurt, gjr_skew_kurt, egarch_skew_kurt, aparch_skew_kurt, harch_skew_kurt, &
+                              riskmetrics2006_skew_kurt, riskmetrics2006_variance, midas_hyperbolic_skew_kurt, &
                               symm_garch_persist, gjr_persist, egarch_persist, aparch_persist, harch_persist, &
-                              aparch_mean_variance
+                              riskmetrics2006_persist, midas_hyperbolic_persist, aparch_mean_variance
     use bfgs_mod,       only: bfgs_minimize
     implicit none
 
@@ -30,13 +33,15 @@ program xfit_arch_common
         real(dp) :: seconds = 0.0_dp
         integer :: nparam = 0
         integer :: niter = 0
+        integer :: aic_rank = 0
+        integer :: bic_rank = 0
         logical :: converged = .false.
     end type fit_row_t
 
     character(len=*), parameter :: prices_file = "spy_efa_eem_tlt_lqd.csv"
     character(len=*), parameter :: csv_file = "arch/fortran_arch_common_results.csv"
     character(len=16), parameter :: models(*) = [character(len=16) :: &
-        "ARCH1", "SYMM_GARCH", "GJR_GARCH", "EGARCH", "APARCH", "HARCH"]
+        "ARCH1", "SYMM_GARCH", "GJR_GARCH", "EGARCH", "APARCH", "HARCH", "RM2006", "MIDASHYP"]
     real(dp), parameter :: trading_days = 252.0_dp
     integer,  parameter :: max_iter = 1000
     real(dp), parameter :: gtol = 1.0e-6_dp
@@ -73,6 +78,8 @@ program xfit_arch_common
     end do
     call system_clock(t_fit1)
 
+    call rank_results(rows, irow)
+
     call system_clock(t_print0)
     call print_results(rows, irow, dates, ncols)
     call system_clock(t_print1)
@@ -102,6 +109,7 @@ contains
         type(fit_row_t), intent(out) :: row
         integer :: t0, t1, rate
         real(dp) :: fopt, h_unc
+        real(dp), allocatable :: variance(:)
 
         call system_clock(t0, rate)
         row = fit_row_t()
@@ -145,6 +153,23 @@ contains
             h_unc = row%params%omega / max(1.0_dp - row%persist, 1.0e-8_dp)
             row%nparam = 4
             call harch_skew_kurt(y, row%params, row%skew, row%ekurt)
+        case ("RM2006", "RISKMETRICS2006")
+            call fit_riskmetrics2006(y, fopt, row%params, row%niter, row%converged)
+            row%persist = riskmetrics2006_persist()
+            allocate(variance(size(y)))
+            call riskmetrics2006_variance(y, variance)
+            h_unc = sum(variance) / real(size(y), dp)
+            deallocate(variance)
+            row%nparam = 0
+            call riskmetrics2006_skew_kurt(y, row%skew, row%ekurt)
+            row%model = "RM2006"
+        case ("MIDASHYP", "MIDAS_HYPERBOLIC")
+            call fit_midas_hyperbolic(y, max_iter, gtol, fopt, row%params, row%niter, row%converged)
+            row%persist = midas_hyperbolic_persist(row%params)
+            h_unc = row%params%omega / max(1.0_dp - row%persist, 1.0e-8_dp)
+            row%nparam = 3
+            call midas_hyperbolic_skew_kurt(y, row%params, row%skew, row%ekurt)
+            row%model = "MIDASHYP"
         case default
             print '(A,A)', "Unknown model: ", trim(model_name)
             error stop
@@ -157,6 +182,22 @@ contains
         call system_clock(t1)
         row%seconds = real(t1 - t0, dp) / real(rate, dp)
     end subroutine fit_model
+
+    subroutine rank_results(rows, nrow)
+        type(fit_row_t), intent(inout) :: rows(:)
+        integer, intent(in) :: nrow
+        integer :: i, j
+
+        do i = 1, nrow
+            rows(i)%aic_rank = 1
+            rows(i)%bic_rank = 1
+            do j = 1, nrow
+                if (trim(rows(j)%asset) /= trim(rows(i)%asset)) cycle
+                if (rows(j)%aic < rows(i)%aic) rows(i)%aic_rank = rows(i)%aic_rank + 1
+                if (rows(j)%bic < rows(i)%bic) rows(i)%bic_rank = rows(i)%bic_rank + 1
+            end do
+        end do
+    end subroutine rank_results
 
     subroutine fit_arch1(y, f_best, params, niter_best, converged_best)
         real(dp), intent(in) :: y(:)
@@ -299,14 +340,14 @@ contains
 
         call print_price_sample_info(prices_file, dates, nassets)
         write(*,'(A)') "Package: Fortran GARCH-BFGS"
-        write(*,'(A)') "Model            Asset        omega   alpha   gamma    beta   delta  persist  vol_ann%        logL         AIC         BIC #param iter conv    skew   ekurt      sec"
-        write(*,'(A)') repeat("-", 174)
+        write(*,'(A)') "Model            Asset        omega   alpha   gamma    beta   delta  persist  vol_ann%        logL         AIC         BIC #param iter conv    skew   ekurt      sec AIC_rank BIC_rank"
+        write(*,'(A)') repeat("-", 192)
         do i = 1, nrow
-            write(*,'(A16,1X,A9,ES12.3,5F8.4,F10.2,3F12.2,I7,I5,1X,L1,2F9.3,F9.3)') &
+            write(*,'(A16,1X,A9,ES12.3,5F8.4,F10.2,3F12.2,I7,I5,1X,L1,2F9.3,F9.3,2I9)') &
                 trim(rows(i)%model), trim(rows(i)%asset), rows(i)%params%omega, rows(i)%params%alpha, &
                 rows(i)%params%gamma, rows(i)%params%beta, rows(i)%params%theta, rows(i)%persist, rows(i)%vol_ann, &
                 rows(i)%logl, rows(i)%aic, rows(i)%bic, rows(i)%nparam, rows(i)%niter, rows(i)%converged, &
-                rows(i)%skew, rows(i)%ekurt, rows(i)%seconds
+                rows(i)%skew, rows(i)%ekurt, rows(i)%seconds, rows(i)%aic_rank, rows(i)%bic_rank
         end do
         write(*,'(/,A,A)') "Wrote ", trim(csv_file)
     end subroutine print_results
@@ -317,13 +358,13 @@ contains
         integer :: unit, i
 
         open(newunit=unit, file=csv_file, status="replace", action="write")
-        write(unit,'(A)') "asset,model,omega,alpha,gamma,beta,delta,persist,vol_ann_pct,logL,AIC,BIC,nparam,iter,conv,skew,ekurt,sec"
+        write(unit,'(A)') "asset,model,omega,alpha,gamma,beta,delta,persist,vol_ann_pct,logL,AIC,BIC,nparam,iter,conv,skew,ekurt,sec,AIC_rank,BIC_rank"
         do i = 1, nrow
-            write(unit,'(A,",",A,",",ES24.16,",",ES24.16,",",ES24.16,",",ES24.16,",",ES24.16,",",ES24.16,",",ES24.16,",",ES24.16,",",ES24.16,",",ES24.16,",",I0,",",I0,",",L1,",",ES24.16,",",ES24.16,",",ES24.16)') &
+            write(unit,'(A,",",A,",",ES24.16,",",ES24.16,",",ES24.16,",",ES24.16,",",ES24.16,",",ES24.16,",",ES24.16,",",ES24.16,",",ES24.16,",",ES24.16,",",I0,",",I0,",",L1,",",ES24.16,",",ES24.16,",",ES24.16,",",I0,",",I0)') &
                 trim(rows(i)%asset), trim(rows(i)%model), rows(i)%params%omega, rows(i)%params%alpha, &
                 rows(i)%params%gamma, rows(i)%params%beta, rows(i)%params%theta, rows(i)%persist, rows(i)%vol_ann, rows(i)%logl, &
                 rows(i)%aic, rows(i)%bic, rows(i)%nparam, rows(i)%niter, rows(i)%converged, &
-                rows(i)%skew, rows(i)%ekurt, rows(i)%seconds
+                rows(i)%skew, rows(i)%ekurt, rows(i)%seconds, rows(i)%aic_rank, rows(i)%bic_rank
         end do
         close(unit)
     end subroutine write_results_csv
