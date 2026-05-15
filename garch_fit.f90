@@ -38,6 +38,7 @@ module garch_fit_mod
     public :: aewma_nag_persist, aewma_twist_persist, rgarch_persist, carr_park_persist
     public :: regarch1_persist, regarch2_persist
     public :: rgarch_meas_persist
+    public :: set_figarch_trunc_lag, get_figarch_trunc_lag
 
     integer, parameter :: n_start = 4
     integer, parameter :: ewma_np = 1
@@ -47,7 +48,8 @@ module garch_fit_mod
     integer, parameter :: qgarch_np = 4
     integer, parameter :: figarch_np = 4
     integer, parameter :: fi_nagarch_np = 5
-    integer, parameter :: figarch_trunc_lag = 1000
+    integer, parameter :: figarch_full_trunc_lag = 1000
+    integer, parameter :: figarch_fast_trunc_lag = 100
     integer, parameter :: nagarch_np = 4
     integer, parameter :: rgarch_np = 3
     integer, parameter :: carr_park_np = 3
@@ -78,6 +80,7 @@ module garch_fit_mod
     integer, save :: ewma_nobs = 0
     integer, save :: qgarch_nobs = 0
     integer, save :: figarch_nobs = 0
+    integer, save :: figarch_trunc_lag = figarch_full_trunc_lag
     integer, save :: aparch_nobs = 0
     integer, save :: harch_nobs = 0
     integer, save :: midas_hyperbolic_nobs = 0
@@ -89,6 +92,16 @@ module garch_fit_mod
     real(dp), parameter :: regarch_log_range_sd = 0.29_dp
 
 contains
+
+    subroutine set_figarch_trunc_lag(trunc_lag)
+        integer, intent(in) :: trunc_lag
+
+        figarch_trunc_lag = max(1, trunc_lag)
+    end subroutine set_figarch_trunc_lag
+
+    integer function get_figarch_trunc_lag()
+        get_figarch_trunc_lag = figarch_trunc_lag
+    end function get_figarch_trunc_lag
 
     subroutine fit_ewma(y, max_iter, gtol, f_best, params, niter_best, converged_best)
         real(dp), intent(in)  :: y(:), gtol
@@ -351,9 +364,12 @@ contains
         real(dp), parameter :: start_shift(n_start) = [0.0_dp, 0.5_dp, -0.5_dp, 1.0_dp]
         type(garch_params_t) :: fig_params
         real(dp) :: p(fi_nagarch_np), p0(fi_nagarch_np), p_best(fi_nagarch_np), f_try, f_fig
-        integer :: istart, niter_try, niter_fig
+        integer :: istart, niter_try, niter_fig, saved_trunc_lag, short_trunc_lag, polish_iter
         logical :: converged_try, converged_fig
 
+        saved_trunc_lag = get_figarch_trunc_lag()
+        short_trunc_lag = min(figarch_fast_trunc_lag, saved_trunc_lag)
+        call set_figarch_trunc_lag(short_trunc_lag)
         call fit_figarch(y, max_iter, gtol, f_fig, fig_params, niter_fig, converged_fig)
         call figarch_set_data(y)
         f_best = huge(1.0_dp)
@@ -373,6 +389,17 @@ contains
                 converged_best = converged_try
             end if
         end do
+
+        call set_figarch_trunc_lag(saved_trunc_lag)
+        if (f_best < huge(1.0_dp)) then
+            p = p_best
+            polish_iter = min(max_iter, max(1, max(25, max_iter / 5)))
+            call bfgs_minimize(fi_nagarch_obj, p, fi_nagarch_np, polish_iter, gtol, f_try, niter_try, converged_try)
+            f_best = f_try
+            p_best = p
+            niter_best = niter_best + niter_try
+            converged_best = converged_try
+        end if
 
         params = garch_params_t()
         call fi_nagarch_transform(p_best, params%omega, params%alpha, params%theta, params%beta, params%twist)
@@ -1497,20 +1524,98 @@ contains
         real(dp), intent(in)  :: p(np)
         real(dp), intent(out) :: f
         real(dp), intent(out) :: g(np)
-        real(dp) :: pp(fi_nagarch_np), fp, fm, step
-        integer :: i
+        real(dp), allocatable :: lambda(:), dl_dphi(:), dl_dd(:), dl_dbeta(:), news(:)
+        real(dp), allocatable :: dn_om(:), dn_phi(:), dn_d(:), dn_beta(:), dn_shift(:)
+        real(dp) :: omega, phi, d, beta, shift, omega_tilde, backcast, scale
+        real(dp) :: h, y, sqrth, impact, factor, dscale_shift
+        real(dp) :: dh_om, dh_phi, dh_d, dh_beta, dh_shift
+        real(dp) :: grad_om, grad_phi, grad_d, grad_beta, grad_shift
+        real(dp) :: ud, uphi, ubeta, phi_max
+        real(dp) :: dd_dp2, dphi_dp2, dphi_dp3, dbeta_dp2, dbeta_dp3, dbeta_dp4
+        integer :: t, i, lag, m
 
-        f = fi_nagarch_value(p)
-        do i = 1, np
-            step = 1.0e-5_dp * max(abs(p(i)), 1.0_dp)
-            pp = p
-            pp(i) = p(i) + step
-            fp = fi_nagarch_value(pp)
-            pp = p
-            pp(i) = p(i) - step
-            fm = fi_nagarch_value(pp)
-            g(i) = (fp - fm) / (2.0_dp*step)
+        call fi_nagarch_transform(p, omega, phi, d, beta, shift)
+        m = figarch_trunc_lag
+        allocate(lambda(m), dl_dphi(m), dl_dd(m), dl_dbeta(m), news(figarch_nobs))
+        allocate(dn_om(figarch_nobs), dn_phi(figarch_nobs), dn_d(figarch_nobs), &
+                 dn_beta(figarch_nobs), dn_shift(figarch_nobs))
+        call figarch_weights_deriv(phi, d, beta, lambda, dl_dphi, dl_dd, dl_dbeta)
+        omega_tilde = omega / max(1.0_dp - beta, 1.0e-8_dp)
+        backcast = figarch_backcast(figarch_obs)
+        scale = 1.0_dp + shift**2
+        dscale_shift = 2.0_dp * shift
+
+        f = real(figarch_nobs, dp) * log_sqrt_2pi
+        grad_om = 0.0_dp
+        grad_phi = 0.0_dp
+        grad_d = 0.0_dp
+        grad_beta = 0.0_dp
+        grad_shift = 0.0_dp
+
+        do t = 1, figarch_nobs
+            h = omega_tilde
+            dh_om = 1.0_dp / max(1.0_dp - beta, 1.0e-8_dp)
+            dh_phi = 0.0_dp
+            dh_d = 0.0_dp
+            dh_beta = omega / max(1.0_dp - beta, 1.0e-8_dp)**2
+            dh_shift = 0.0_dp
+
+            do i = t, m
+                h = h + lambda(i)*backcast
+                dh_phi = dh_phi + dl_dphi(i)*backcast
+                dh_d = dh_d + dl_dd(i)*backcast
+                dh_beta = dh_beta + dl_dbeta(i)*backcast
+            end do
+            do i = 1, min(t - 1, m)
+                lag = t - i
+                h = h + lambda(i)*news(lag)
+                dh_om = dh_om + lambda(i)*dn_om(lag)
+                dh_phi = dh_phi + dl_dphi(i)*news(lag) + lambda(i)*dn_phi(lag)
+                dh_d = dh_d + dl_dd(i)*news(lag) + lambda(i)*dn_d(lag)
+                dh_beta = dh_beta + dl_dbeta(i)*news(lag) + lambda(i)*dn_beta(lag)
+                dh_shift = dh_shift + lambda(i)*dn_shift(lag)
+            end do
+            h = max(h, 1.0e-12_dp)
+            y = figarch_obs(t)
+            factor = 1.0_dp/h - y**2 / h**2
+            f = f + 0.5_dp * (log(h) + y**2 / h)
+            grad_om = grad_om + 0.5_dp * factor * dh_om
+            grad_phi = grad_phi + 0.5_dp * factor * dh_phi
+            grad_d = grad_d + 0.5_dp * factor * dh_d
+            grad_beta = grad_beta + 0.5_dp * factor * dh_beta
+            grad_shift = grad_shift + 0.5_dp * factor * dh_shift
+
+            sqrth = sqrt(h)
+            impact = y - shift*sqrth
+            news(t) = impact**2 / scale
+            dn_om(t) = -impact*shift*dh_om / (scale*sqrth)
+            dn_phi(t) = -impact*shift*dh_phi / (scale*sqrth)
+            dn_d(t) = -impact*shift*dh_d / (scale*sqrth)
+            dn_beta(t) = -impact*shift*dh_beta / (scale*sqrth)
+            dn_shift(t) = 2.0_dp*impact*(-sqrth - 0.5_dp*shift*dh_shift/sqrth) / scale - &
+                          impact**2 * dscale_shift / scale**2
         end do
+
+        ud = d
+        phi_max = max(0.5_dp * (1.0_dp - d), 1.0e-8_dp)
+        uphi = min(max(phi / phi_max, 1.0e-8_dp), 1.0_dp - 1.0e-8_dp)
+        ubeta = min(max(beta / max(d + phi, 1.0e-8_dp), 1.0e-8_dp), 1.0_dp - 1.0e-8_dp)
+        dd_dp2 = ud * (1.0_dp - ud)
+        dphi_dp2 = -0.5_dp * uphi * dd_dp2
+        dphi_dp3 = phi_max * uphi * (1.0_dp - uphi)
+        dbeta_dp2 = ubeta * (dd_dp2 + dphi_dp2)
+        dbeta_dp3 = ubeta * dphi_dp3
+        dbeta_dp4 = (d + phi) * ubeta * (1.0_dp - ubeta)
+
+        g(1) = grad_om * omega
+        g(2) = grad_d*dd_dp2 + grad_phi*dphi_dp2 + grad_beta*dbeta_dp2
+        g(3) = grad_phi*dphi_dp3 + grad_beta*dbeta_dp3
+        g(4) = grad_beta*dbeta_dp4
+        g(5) = grad_shift
+
+        f = f / real(figarch_nobs, dp)
+        g = g / real(figarch_nobs, dp)
+        deallocate(lambda, dl_dphi, dl_dd, dl_dbeta, news, dn_om, dn_phi, dn_d, dn_beta, dn_shift)
     end subroutine fi_nagarch_obj
 
     subroutine harch_transform(p, omega, alpha1, alpha5, alpha22)
