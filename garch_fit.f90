@@ -1,6 +1,6 @@
 module garch_fit_mod
     use kind_mod,       only: dp
-    use math_const_mod, only: log_sqrt_2pi, sqrt2
+    use math_const_mod, only: log_sqrt_2pi, sqrt2, pi
     use garch_types_mod, only: garch_params_t
     use garch_mod,      only: garch_set_data, garch_obj, garch_transform, garch_inv_transform
     use nagarch_mod,    only: nagarch_set_data, nagarch_obj, nagarch_transform, nagarch_inv_transform
@@ -14,26 +14,34 @@ module garch_fit_mod
     implicit none
     private
 
-    public :: fit_symm_garch, fit_qgarch, fit_figarch, fit_fi_nagarch, fit_nagarch, fit_rgarch, fit_carr_park
+    public :: fit_symm_garch, fit_symm_garch_pq, fit_qgarch, fit_figarch, fit_fi_nagarch
+    public :: fit_nagarch, fit_nagarch_pq, fit_rgarch, fit_carr_park
     public :: fit_regarch1, fit_regarch2, fit_rgarch_meas
-    public :: fit_nagarch_range, fit_gjr, fit_gjr_signed, fit_egarch, fit_aparch, fit_harch
+    public :: fit_nagarch_range, fit_gjr, fit_gjr_signed, fit_egarch, fit_aparch, fit_harch, fit_tgarch
+    public :: fit_csgarch
     public :: fit_riskmetrics2006, fit_midas_hyperbolic, fit_midas_hyperbolic_asym
     public :: fit_fgarch_twist, fit_fgarch_twist_range, fit_ewma
     public :: fit_aewma_nag, fit_aewma_twist
-    public :: garch_skew_kurt, qgarch_skew_kurt, nagarch_skew_kurt, rgarch_skew_kurt, carr_park_skew_kurt
+    public :: garch_skew_kurt, garch_pq_skew_kurt, qgarch_skew_kurt
+    public :: nagarch_skew_kurt, nagarch_pq_skew_kurt, rgarch_skew_kurt, carr_park_skew_kurt
     public :: regarch1_skew_kurt, regarch2_skew_kurt
     public :: rgarch_meas_skew_kurt
     public :: nagarch_range_skew_kurt
-    public :: gjr_skew_kurt, egarch_skew_kurt, aparch_skew_kurt, harch_skew_kurt
+    public :: gjr_skew_kurt, egarch_skew_kurt, aparch_skew_kurt, harch_skew_kurt, tgarch_skew_kurt
+    public :: csgarch_skew_kurt
     public :: figarch_skew_kurt, fi_nagarch_skew_kurt
     public :: riskmetrics2006_skew_kurt, midas_hyperbolic_skew_kurt, midas_hyperbolic_asym_skew_kurt
     public :: ewma_skew_kurt
     public :: aewma_nag_skew_kurt, aewma_twist_skew_kurt, fgarch_twist_range_skew_kurt
-    public :: symm_garch_persist, qgarch_persist, figarch_persist, fi_nagarch_persist, nagarch_persist
-    public :: gjr_persist, egarch_persist, aparch_persist, harch_persist
+    public :: symm_garch_persist, symm_garch_pq_persist, qgarch_persist
+    public :: figarch_persist, fi_nagarch_persist, nagarch_persist, nagarch_pq_persist
+    public :: gjr_persist, egarch_persist, aparch_persist, harch_persist, tgarch_persist
+    public :: csgarch_persist
     public :: riskmetrics2006_persist, midas_hyperbolic_persist, midas_hyperbolic_asym_persist
-    public :: aparch_mean_variance, qgarch_mean_variance, figarch_variance, fi_nagarch_variance
-    public :: riskmetrics2006_variance
+    public :: aparch_mean_variance, tgarch_variance, qgarch_mean_variance, figarch_variance, fi_nagarch_variance
+    public :: symm_garch_pq_variance, nagarch_pq_variance
+    public :: csgarch_variance
+    public :: riskmetrics2006_variance, ewma_variance
     public :: fgarch_twist_moment, fgarch_twist_persist, ewma_persist
     public :: aewma_nag_persist, aewma_twist_persist, rgarch_persist, carr_park_persist
     public :: regarch1_persist, regarch2_persist
@@ -46,6 +54,7 @@ module garch_fit_mod
     integer, parameter :: aewma_twist_np = 4
     integer, parameter :: symm_garch_np = 3
     integer, parameter :: qgarch_np = 4
+    integer, parameter :: csgarch_np = 5
     integer, parameter :: figarch_np = 4
     integer, parameter :: fi_nagarch_np = 5
     integer, parameter :: figarch_full_trunc_lag = 1000
@@ -61,6 +70,7 @@ module garch_fit_mod
     integer, parameter :: egarch_np = 4
     integer, parameter :: aparch_np = 5
     integer, parameter :: harch_np = 4
+    integer, parameter :: tgarch_np = 4
     integer, parameter :: midas_hyperbolic_np = 3
     integer, parameter :: midas_hyperbolic_asym_np = 4
     integer, parameter :: midas_hyperbolic_m = 22
@@ -69,9 +79,12 @@ module garch_fit_mod
     integer, parameter :: fgarch_twist_range_np = 6
     real(dp), allocatable, save :: ewma_obs(:)
     real(dp), allocatable, save :: qgarch_obs(:)
+    real(dp), allocatable, save :: csgarch_obs(:)
+    real(dp), allocatable, save :: garch_pq_obs(:)
     real(dp), allocatable, save :: figarch_obs(:)
     real(dp), allocatable, save :: aparch_obs(:)
     real(dp), allocatable, save :: harch_obs(:)
+    real(dp), allocatable, save :: tgarch_obs(:)
     real(dp), allocatable, save :: midas_hyperbolic_obs(:)
     real(dp), allocatable, save :: nag_range_obs(:), nag_range_x(:)
     real(dp), allocatable, save :: rgarch_obs(:), rgarch_x(:)
@@ -79,10 +92,16 @@ module garch_fit_mod
     real(dp), allocatable, save :: regarch_obs(:), regarch_log_range(:)
     integer, save :: ewma_nobs = 0
     integer, save :: qgarch_nobs = 0
+    integer, save :: csgarch_nobs = 0
+    integer, save :: garch_pq_nobs = 0
+    integer, save :: garch_pq_p = 0
+    integer, save :: garch_pq_q = 0
+    logical, save :: garch_pq_use_nag = .false.
     integer, save :: figarch_nobs = 0
     integer, save :: figarch_trunc_lag = figarch_full_trunc_lag
     integer, save :: aparch_nobs = 0
     integer, save :: harch_nobs = 0
+    integer, save :: tgarch_nobs = 0
     integer, save :: midas_hyperbolic_nobs = 0
     integer, save :: nag_range_nobs = 0
     integer, save :: rgarch_nobs = 0
@@ -257,6 +276,142 @@ contains
         params = garch_params_t()
         call garch_transform(p_best, params%omega, params%alpha, params%beta)
     end subroutine fit_symm_garch
+
+    subroutine fit_symm_garch_pq(y, p_lag, q_lag, max_iter, gtol, f_best, params, niter_best, converged_best)
+        real(dp), intent(in)  :: y(:), gtol
+        integer,  intent(in)  :: p_lag, q_lag, max_iter
+        real(dp), intent(out) :: f_best
+        type(garch_params_t), intent(out) :: params
+        integer,  intent(out) :: niter_best
+        logical,  intent(out) :: converged_best
+        real(dp) :: pvec(1 + p_lag + q_lag), p0(1 + p_lag + q_lag), p_best(1 + p_lag + q_lag), f_try
+        real(dp), allocatable :: alpha0(:), beta0(:), alpha(:), beta(:)
+        real(dp), parameter :: start_persist(n_start) = [0.94_dp, 0.97_dp, 0.90_dp, 0.98_dp]
+        real(dp) :: var_y, persist0
+        integer :: istart, niter_try
+        logical :: converged_try
+
+        call garch_pq_set_data(y, p_lag, q_lag, .false.)
+        allocate(alpha0(p_lag), beta0(q_lag), alpha(p_lag), beta(q_lag))
+        var_y = max(sum(y**2) / real(size(y), dp), 1.0e-12_dp)
+        f_best = huge(1.0_dp)
+        p_best = 0.0_dp
+        niter_best = 0
+        converged_best = .false.
+
+        do istart = 1, n_start
+            persist0 = start_persist(istart)
+            alpha0 = 0.10_dp * persist0 / real(p_lag, dp)
+            beta0 = 0.90_dp * persist0 / real(q_lag, dp)
+            call garch_pq_inv_transform(max((1.0_dp - persist0)*var_y, 1.0e-12_dp), alpha0, beta0, p0)
+            pvec = p0
+            call bfgs_minimize(garch_pq_obj, pvec, size(pvec), max_iter, gtol, f_try, niter_try, converged_try)
+            if (f_try < f_best) then
+                f_best = f_try
+                p_best = pvec
+                niter_best = niter_try
+                converged_best = converged_try
+            end if
+        end do
+
+        params = garch_params_t()
+        allocate(params%alpha_lags(p_lag), params%beta_lags(q_lag))
+        call garch_pq_transform(p_best, params%omega, alpha, beta)
+        params%alpha_lags = alpha
+        params%beta_lags = beta
+        params%alpha = sum(alpha)
+        params%beta = sum(beta)
+        deallocate(alpha0, beta0, alpha, beta)
+    end subroutine fit_symm_garch_pq
+
+    subroutine fit_csgarch(y, max_iter, gtol, f_best, params, niter_best, converged_best)
+        real(dp), intent(in)  :: y(:), gtol
+        integer,  intent(in)  :: max_iter
+        real(dp), intent(out) :: f_best
+        type(garch_params_t), intent(out) :: params
+        integer,  intent(out) :: niter_best
+        logical,  intent(out) :: converged_best
+        real(dp), parameter :: starts(csgarch_np,n_start) = reshape( &
+            [1.0e-6_dp, 0.04_dp, 0.70_dp, 0.98_dp, 0.02_dp, &
+             1.0e-6_dp, 0.06_dp, 0.75_dp, 0.97_dp, 0.03_dp, &
+             5.0e-6_dp, 0.08_dp, 0.65_dp, 0.96_dp, 0.05_dp, &
+             5.0e-6_dp, 0.10_dp, 0.60_dp, 0.95_dp, 0.08_dp], [csgarch_np,n_start])
+        real(dp) :: p(csgarch_np), p0(csgarch_np), p_best(csgarch_np), f_try
+        integer :: istart, niter_try
+        logical :: converged_try
+
+        call csgarch_set_data(y)
+        f_best = huge(1.0_dp)
+        p_best = 0.0_dp
+        niter_best = 0
+        converged_best = .false.
+
+        do istart = 1, n_start
+            call csgarch_inv_transform(starts(1,istart), starts(2,istart), starts(3,istart), &
+                                       starts(4,istart), starts(5,istart), p0)
+            p = p0
+            call bfgs_minimize(csgarch_obj, p, csgarch_np, max_iter, gtol, f_try, niter_try, converged_try)
+            if (f_try < f_best) then
+                f_best = f_try
+                p_best = p
+                niter_best = niter_try
+                converged_best = converged_try
+            end if
+        end do
+
+        params = garch_params_t()
+        call csgarch_transform(p_best, params%omega, params%alpha, params%beta, params%extra1, params%extra2)
+        params%gamma = params%extra2
+    end subroutine fit_csgarch
+
+    subroutine fit_nagarch_pq(y, p_lag, q_lag, max_iter, gtol, f_best, params, niter_best, converged_best)
+        real(dp), intent(in)  :: y(:), gtol
+        integer,  intent(in)  :: p_lag, q_lag, max_iter
+        real(dp), intent(out) :: f_best
+        type(garch_params_t), intent(out) :: params
+        integer,  intent(out) :: niter_best
+        logical,  intent(out) :: converged_best
+        real(dp), parameter :: start_theta(n_start) = [0.0_dp, 0.5_dp, 1.0_dp, -0.5_dp]
+        real(dp) :: pvec(2 + p_lag + q_lag), p0(2 + p_lag + q_lag), p_best(2 + p_lag + q_lag), f_try
+        real(dp), allocatable :: alpha0(:), beta0(:), alpha(:), beta(:)
+        real(dp), parameter :: start_persist(n_start) = [0.94_dp, 0.97_dp, 0.90_dp, 0.98_dp]
+        real(dp) :: var_y, persist0
+        integer :: istart, niter_try
+        logical :: converged_try
+
+        call garch_pq_set_data(y, p_lag, q_lag, .true.)
+        allocate(alpha0(p_lag), beta0(q_lag), alpha(p_lag), beta(q_lag))
+        var_y = max(sum(y**2) / real(size(y), dp), 1.0e-12_dp)
+        f_best = huge(1.0_dp)
+        p_best = 0.0_dp
+        niter_best = 0
+        converged_best = .false.
+
+        do istart = 1, n_start
+            persist0 = start_persist(istart)
+            alpha0 = 0.10_dp * persist0 / (real(p_lag, dp) * (1.0_dp + start_theta(istart)**2))
+            beta0 = 0.90_dp * persist0 / real(q_lag, dp)
+            call nagarch_pq_inv_transform(max((1.0_dp - persist0)*var_y, 1.0e-12_dp), &
+                                          alpha0, beta0, start_theta(istart), p0)
+            pvec = p0
+            call bfgs_minimize(garch_pq_obj, pvec, size(pvec), max_iter, gtol, f_try, niter_try, converged_try)
+            if (f_try < f_best) then
+                f_best = f_try
+                p_best = pvec
+                niter_best = niter_try
+                converged_best = converged_try
+            end if
+        end do
+
+        params = garch_params_t()
+        allocate(params%alpha_lags(p_lag), params%beta_lags(q_lag))
+        call nagarch_pq_transform(p_best, params%omega, alpha, beta, params%theta)
+        params%alpha_lags = alpha
+        params%beta_lags = beta
+        params%alpha = sum(alpha)
+        params%beta = sum(beta)
+        deallocate(alpha0, beta0, alpha, beta)
+    end subroutine fit_nagarch_pq
 
     subroutine fit_qgarch(y, max_iter, gtol, f_best, params, niter_best, converged_best)
         real(dp), intent(in)  :: y(:), gtol
@@ -445,6 +600,47 @@ contains
         params = garch_params_t()
         call harch_transform(p_best, params%omega, params%alpha, params%gamma, params%beta)
     end subroutine fit_harch
+
+    subroutine fit_tgarch(y, max_iter, gtol, f_best, params, niter_best, converged_best)
+        real(dp), intent(in)  :: y(:), gtol
+        integer,  intent(in)  :: max_iter
+        real(dp), intent(out) :: f_best
+        type(garch_params_t), intent(out) :: params
+        integer,  intent(out) :: niter_best
+        logical,  intent(out) :: converged_best
+        real(dp), parameter :: starts(tgarch_np,n_start) = reshape( &
+            [1.0e-4_dp, 0.10_dp, 0.85_dp, 0.20_dp, &
+             1.0e-4_dp, 0.08_dp, 0.88_dp, 0.50_dp, &
+             5.0e-5_dp, 0.12_dp, 0.82_dp, 0.80_dp, &
+             5.0e-5_dp, 0.05_dp, 0.92_dp, 0.00_dp], [tgarch_np,n_start])
+        real(dp) :: p(tgarch_np), p0(tgarch_np), p_best(tgarch_np), f_try
+        real(dp) :: omega0, sigma_bar
+        integer :: istart, niter_try
+        logical :: converged_try
+
+        call tgarch_set_data(y)
+        f_best = huge(1.0_dp)
+        p_best = 0.0_dp
+        niter_best = 0
+        converged_best = .false.
+        sigma_bar = sqrt(max(sum(y**2) / real(size(y), dp), 1.0e-12_dp))
+
+        do istart = 1, n_start
+            omega0 = max((1.0_dp - tgarch_kappa()*starts(2,istart) - starts(3,istart))*sigma_bar, 1.0e-8_dp)
+            call tgarch_inv_transform(omega0, starts(2,istart), starts(3,istart), starts(4,istart), p0)
+            p = p0
+            call bfgs_minimize(tgarch_obj, p, tgarch_np, max_iter, gtol, f_try, niter_try, converged_try)
+            if (f_try < f_best) then
+                f_best = f_try
+                p_best = p
+                niter_best = niter_try
+                converged_best = converged_try
+            end if
+        end do
+
+        params = garch_params_t()
+        call tgarch_transform(p_best, params%omega, params%alpha, params%beta, params%gamma)
+    end subroutine fit_tgarch
 
     subroutine fit_riskmetrics2006(y, f_best, params, niter_best, converged_best)
         real(dp), intent(in)  :: y(:)
@@ -1083,6 +1279,14 @@ contains
         harch_nobs = size(y)
     end subroutine harch_set_data
 
+    subroutine tgarch_set_data(y)
+        real(dp), intent(in) :: y(:)
+        if (allocated(tgarch_obs)) deallocate(tgarch_obs)
+        allocate(tgarch_obs(size(y)))
+        tgarch_obs = y
+        tgarch_nobs = size(y)
+    end subroutine tgarch_set_data
+
     subroutine qgarch_set_data(y)
         real(dp), intent(in) :: y(:)
         if (allocated(qgarch_obs)) deallocate(qgarch_obs)
@@ -1090,6 +1294,142 @@ contains
         qgarch_obs = y
         qgarch_nobs = size(y)
     end subroutine qgarch_set_data
+
+    real(dp) function tgarch_kappa()
+        tgarch_kappa = sqrt(2.0_dp / pi)
+    end function tgarch_kappa
+
+    subroutine tgarch_transform(p, omega, alpha, beta, eta)
+        real(dp), intent(in)  :: p(tgarch_np)
+        real(dp), intent(out) :: omega, alpha, beta, eta
+        real(dp) :: ea, eb, s, kappa
+
+        kappa = tgarch_kappa()
+        omega = exp(p(1))
+        eta = tanh(p(2))
+        ea = exp(p(3))
+        eb = exp(p(4))
+        s = 1.0_dp + ea + eb
+        alpha = ea / (kappa*s)
+        beta = eb / s
+    end subroutine tgarch_transform
+
+    subroutine tgarch_inv_transform(omega, alpha, beta, eta, p)
+        real(dp), intent(in)  :: omega, alpha, beta, eta
+        real(dp), intent(out) :: p(tgarch_np)
+        real(dp) :: slack, kappa, et
+
+        kappa = tgarch_kappa()
+        slack = max(1.0_dp - kappa*alpha - beta, 1.0e-8_dp)
+        et = min(max(eta, -1.0_dp + 1.0e-8_dp), 1.0_dp - 1.0e-8_dp)
+        p(1) = log(max(omega, 1.0e-12_dp))
+        p(2) = 0.5_dp * log((1.0_dp + et) / (1.0_dp - et))
+        p(3) = log(max(kappa*alpha, 1.0e-12_dp) / slack)
+        p(4) = log(max(beta, 1.0e-12_dp) / slack)
+    end subroutine tgarch_inv_transform
+
+    subroutine tgarch_variance(y, params, variance)
+        real(dp), intent(in) :: y(:)
+        type(garch_params_t), intent(in) :: params
+        real(dp), intent(out) :: variance(:)
+        real(dp) :: sigma, z, news
+        integer :: t
+
+        sigma = params%omega / max(1.0_dp - tgarch_persist(params), 1.0e-8_dp)
+        sigma = max(sigma, sqrt(max(sum(y**2) / real(size(y), dp), 1.0e-12_dp)))
+        do t = 1, size(y)
+            sigma = max(sigma, 1.0e-6_dp)
+            variance(t) = sigma**2
+            z = y(t) / sigma
+            news = sqrt(1.0e-6_dp + z**2) - params%gamma*z
+            sigma = params%omega + params%alpha*news*sigma + params%beta*sigma
+        end do
+    end subroutine tgarch_variance
+
+    real(dp) function tgarch_value(p)
+        real(dp), intent(in) :: p(tgarch_np)
+        type(garch_params_t) :: params
+        real(dp), allocatable :: variance(:)
+        integer :: t
+
+        call tgarch_transform(p, params%omega, params%alpha, params%beta, params%gamma)
+        allocate(variance(tgarch_nobs))
+        call tgarch_variance(tgarch_obs, params, variance)
+        tgarch_value = real(tgarch_nobs, dp) * log_sqrt_2pi
+        do t = 1, tgarch_nobs
+            tgarch_value = tgarch_value + 0.5_dp * (log(variance(t)) + tgarch_obs(t)**2 / variance(t))
+        end do
+        tgarch_value = tgarch_value / real(tgarch_nobs, dp)
+        deallocate(variance)
+    end function tgarch_value
+
+    subroutine tgarch_obj(p, np, f, g)
+        integer,  intent(in)  :: np
+        real(dp), intent(in)  :: p(np)
+        real(dp), intent(out) :: f
+        real(dp), intent(out) :: g(np)
+        real(dp) :: omega, alpha, beta, eta, kappa, ea, eb, s
+        real(dp) :: sigma, sigma_floor, denom, persist, sample_sigma
+        real(dp) :: y, root_news, news, score_sigma, root_deriv
+        real(dp) :: domega(tgarch_np), dalpha(tgarch_np), dbeta(tgarch_np), deta(tgarch_np)
+        real(dp) :: dpersist(tgarch_np), dsigma(tgarch_np), dsigma_next(tgarch_np)
+        integer :: t
+
+        kappa = tgarch_kappa()
+        omega = exp(p(1))
+        eta = tanh(p(2))
+        ea = exp(p(3))
+        eb = exp(p(4))
+        s = 1.0_dp + ea + eb
+        alpha = ea / (kappa*s)
+        beta = eb / s
+
+        domega = 0.0_dp
+        dalpha = 0.0_dp
+        dbeta = 0.0_dp
+        deta = 0.0_dp
+        domega(1) = omega
+        deta(2) = 1.0_dp - eta**2
+        dalpha(3) = alpha * (1.0_dp - kappa*alpha)
+        dalpha(4) = -alpha * beta
+        dbeta(3) = -beta * kappa*alpha
+        dbeta(4) = beta * (1.0_dp - beta)
+        dpersist = kappa*dalpha + dbeta
+
+        persist = kappa*alpha + beta
+        denom = max(1.0_dp - persist, 1.0e-8_dp)
+        sigma = omega / denom
+        sample_sigma = sqrt(max(sum(tgarch_obs**2) / real(tgarch_nobs, dp), 1.0e-12_dp))
+        if (sigma >= sample_sigma) then
+            dsigma = domega / denom + omega * dpersist / denom**2
+        else
+            sigma = sample_sigma
+            dsigma = 0.0_dp
+        end if
+
+        f = real(tgarch_nobs, dp) * log_sqrt_2pi
+        g = 0.0_dp
+        do t = 1, tgarch_nobs
+            sigma_floor = max(sigma, 1.0e-6_dp)
+            if (sigma_floor /= sigma) then
+                sigma = sigma_floor
+                dsigma = 0.0_dp
+            end if
+            y = tgarch_obs(t)
+            f = f + log(sigma) + 0.5_dp * y**2 / sigma**2
+            score_sigma = 1.0_dp / sigma - y**2 / sigma**3
+            g = g + score_sigma * dsigma
+
+            root_news = sqrt(1.0e-6_dp*sigma**2 + y**2)
+            news = root_news - eta*y
+            root_deriv = 1.0e-6_dp * sigma / max(root_news, 1.0e-12_dp)
+            dsigma_next = domega + dalpha*news + alpha*(root_deriv*dsigma - deta*y) + dbeta*sigma + beta*dsigma
+            sigma = omega + alpha*news + beta*sigma
+            dsigma = dsigma_next
+        end do
+        f = f / real(tgarch_nobs, dp)
+        g = g / real(tgarch_nobs, dp)
+    end subroutine tgarch_obj
 
     subroutine figarch_set_data(y)
         real(dp), intent(in) :: y(:)
@@ -1617,6 +1957,296 @@ contains
         g = g / real(figarch_nobs, dp)
         deallocate(lambda, dl_dphi, dl_dd, dl_dbeta, news, dn_om, dn_phi, dn_d, dn_beta, dn_shift)
     end subroutine fi_nagarch_obj
+
+    subroutine garch_pq_set_data(y, p_lag, q_lag, use_nag)
+        real(dp), intent(in) :: y(:)
+        integer,  intent(in) :: p_lag, q_lag
+        logical,  intent(in) :: use_nag
+
+        if (allocated(garch_pq_obs)) deallocate(garch_pq_obs)
+        garch_pq_nobs = size(y)
+        allocate(garch_pq_obs(garch_pq_nobs))
+        garch_pq_obs = y
+        garch_pq_p = p_lag
+        garch_pq_q = q_lag
+        garch_pq_use_nag = use_nag
+    end subroutine garch_pq_set_data
+
+    subroutine garch_pq_transform(p, omega, alpha, beta)
+        real(dp), intent(in)  :: p(:)
+        real(dp), intent(out) :: omega, alpha(:), beta(:)
+        real(dp) :: expo(size(alpha) + size(beta)), denom
+        integer :: i, nalpha, nbeta
+
+        nalpha = size(alpha)
+        nbeta = size(beta)
+        omega = exp(p(1))
+        do i = 1, size(expo)
+            expo(i) = exp(min(max(p(1 + i), -50.0_dp), 50.0_dp))
+        end do
+        denom = 1.0_dp + sum(expo)
+        if (nalpha > 0) alpha = expo(1:nalpha) / denom
+        if (nbeta > 0) beta = expo(nalpha + 1:nalpha + nbeta) / denom
+    end subroutine garch_pq_transform
+
+    subroutine garch_pq_inv_transform(omega, alpha, beta, p)
+        real(dp), intent(in)  :: omega, alpha(:), beta(:)
+        real(dp), intent(out) :: p(:)
+        real(dp) :: slack
+        integer :: i, nalpha, nbeta
+
+        nalpha = size(alpha)
+        nbeta = size(beta)
+        slack = max(1.0_dp - sum(alpha) - sum(beta), 1.0e-8_dp)
+        p(1) = log(max(omega, 1.0e-12_dp))
+        do i = 1, nalpha
+            p(1 + i) = log(max(alpha(i), 1.0e-12_dp) / slack)
+        end do
+        do i = 1, nbeta
+            p(1 + nalpha + i) = log(max(beta(i), 1.0e-12_dp) / slack)
+        end do
+    end subroutine garch_pq_inv_transform
+
+    subroutine nagarch_pq_transform(p, omega, alpha, beta, theta)
+        real(dp), intent(in)  :: p(:)
+        real(dp), intent(out) :: omega, alpha(:), beta(:), theta
+        real(dp) :: raw_alpha(size(alpha))
+
+        theta = p(size(p))
+        call garch_pq_transform(p(1:size(p)-1), omega, raw_alpha, beta)
+        alpha = raw_alpha / (1.0_dp + theta**2)
+    end subroutine nagarch_pq_transform
+
+    subroutine nagarch_pq_inv_transform(omega, alpha, beta, theta, p)
+        real(dp), intent(in)  :: omega, alpha(:), beta(:), theta
+        real(dp), intent(out) :: p(:)
+        real(dp) :: raw_alpha(size(alpha))
+
+        raw_alpha = alpha * (1.0_dp + theta**2)
+        call garch_pq_inv_transform(omega, raw_alpha, beta, p(1:size(p)-1))
+        p(size(p)) = theta
+    end subroutine nagarch_pq_inv_transform
+
+    subroutine symm_garch_pq_variance(y, params, variance)
+        real(dp), intent(in) :: y(:)
+        type(garch_params_t), intent(in) :: params
+        real(dp), intent(out) :: variance(:)
+        real(dp) :: backcast, h, lag_h
+        integer :: t, i, p_lag, q_lag, lag
+
+        p_lag = size(params%alpha_lags)
+        q_lag = size(params%beta_lags)
+        backcast = max(sum(y**2) / real(size(y), dp), 1.0e-12_dp)
+        do t = 1, size(y)
+            h = params%omega
+            do i = 1, p_lag
+                lag = t - i
+                if (lag >= 1) then
+                    h = h + params%alpha_lags(i) * y(lag)**2
+                else
+                    h = h + params%alpha_lags(i) * backcast
+                end if
+            end do
+            do i = 1, q_lag
+                lag = t - i
+                if (lag >= 1) then
+                    lag_h = variance(lag)
+                else
+                    lag_h = backcast
+                end if
+                h = h + params%beta_lags(i) * lag_h
+            end do
+            variance(t) = max(h, 1.0e-12_dp)
+        end do
+    end subroutine symm_garch_pq_variance
+
+    subroutine nagarch_pq_variance(y, params, variance)
+        real(dp), intent(in) :: y(:)
+        type(garch_params_t), intent(in) :: params
+        real(dp), intent(out) :: variance(:)
+        real(dp) :: backcast, h, lag_h, sqrth, lag_y
+        integer :: t, i, p_lag, q_lag, lag
+
+        p_lag = size(params%alpha_lags)
+        q_lag = size(params%beta_lags)
+        backcast = max(sum(y**2) / real(size(y), dp), 1.0e-12_dp)
+        do t = 1, size(y)
+            h = params%omega
+            do i = 1, p_lag
+                lag = t - i
+                if (lag >= 1) then
+                    lag_h = variance(lag)
+                    lag_y = y(lag)
+                else
+                    lag_h = backcast
+                    lag_y = 0.0_dp
+                end if
+                sqrth = sqrt(max(lag_h, 1.0e-12_dp))
+                h = h + params%alpha_lags(i) * (lag_y - params%theta*sqrth)**2
+            end do
+            do i = 1, q_lag
+                lag = t - i
+                if (lag >= 1) then
+                    lag_h = variance(lag)
+                else
+                    lag_h = backcast
+                end if
+                h = h + params%beta_lags(i) * lag_h
+            end do
+            variance(t) = max(h, 1.0e-12_dp)
+        end do
+    end subroutine nagarch_pq_variance
+
+    real(dp) function garch_pq_value(p)
+        real(dp), intent(in) :: p(:)
+        type(garch_params_t) :: params
+        real(dp), allocatable :: variance(:), alpha(:), beta(:)
+        integer :: t
+
+        allocate(alpha(garch_pq_p), beta(garch_pq_q), variance(garch_pq_nobs))
+        allocate(params%alpha_lags(garch_pq_p), params%beta_lags(garch_pq_q))
+        if (garch_pq_use_nag) then
+            call nagarch_pq_transform(p, params%omega, alpha, beta, params%theta)
+            params%alpha_lags = alpha
+            params%beta_lags = beta
+            call nagarch_pq_variance(garch_pq_obs, params, variance)
+        else
+            call garch_pq_transform(p, params%omega, alpha, beta)
+            params%alpha_lags = alpha
+            params%beta_lags = beta
+            call symm_garch_pq_variance(garch_pq_obs, params, variance)
+        end if
+
+        garch_pq_value = real(garch_pq_nobs, dp) * log_sqrt_2pi
+        do t = 1, garch_pq_nobs
+            garch_pq_value = garch_pq_value + 0.5_dp * (log(variance(t)) + garch_pq_obs(t)**2 / variance(t))
+        end do
+        garch_pq_value = garch_pq_value / real(garch_pq_nobs, dp)
+        deallocate(alpha, beta, variance)
+    end function garch_pq_value
+
+    subroutine garch_pq_obj(p, np, f, g)
+        integer,  intent(in)  :: np
+        real(dp), intent(in)  :: p(np)
+        real(dp), intent(out) :: f
+        real(dp), intent(out) :: g(np)
+        real(dp) :: pp(np), fp, fm, step
+        integer :: i
+
+        f = garch_pq_value(p)
+        do i = 1, np
+            step = 1.0e-5_dp * max(abs(p(i)), 1.0_dp)
+            pp = p
+            pp(i) = p(i) + step
+            fp = garch_pq_value(pp)
+            pp = p
+            pp(i) = p(i) - step
+            fm = garch_pq_value(pp)
+            g(i) = (fp - fm) / (2.0_dp*step)
+        end do
+    end subroutine garch_pq_obj
+
+    subroutine csgarch_set_data(y)
+        real(dp), intent(in) :: y(:)
+
+        if (allocated(csgarch_obs)) deallocate(csgarch_obs)
+        csgarch_nobs = size(y)
+        allocate(csgarch_obs(csgarch_nobs))
+        csgarch_obs = y
+    end subroutine csgarch_set_data
+
+    subroutine csgarch_transform(p, omega, alpha, beta, rho, phi)
+        real(dp), intent(in)  :: p(csgarch_np)
+        real(dp), intent(out) :: omega, alpha, beta, rho, phi
+        real(dp) :: ea, eb, denom
+
+        omega = exp(p(1))
+        ea = exp(p(2))
+        eb = exp(p(3))
+        denom = 1.0_dp + ea + eb
+        alpha = ea / denom
+        beta = eb / denom
+        rho = 1.0_dp / (1.0_dp + exp(-p(4)))
+        phi = 0.25_dp / (1.0_dp + exp(-p(5)))
+    end subroutine csgarch_transform
+
+    subroutine csgarch_inv_transform(omega, alpha, beta, rho, phi, p)
+        real(dp), intent(in)  :: omega, alpha, beta, rho, phi
+        real(dp), intent(out) :: p(csgarch_np)
+        real(dp) :: slack, rr, pp
+
+        slack = max(1.0_dp - alpha - beta, 1.0e-8_dp)
+        rr = min(max(rho, 1.0e-8_dp), 1.0_dp - 1.0e-8_dp)
+        pp = min(max(phi / 0.25_dp, 1.0e-8_dp), 1.0_dp - 1.0e-8_dp)
+        p(1) = log(max(omega, 1.0e-12_dp))
+        p(2) = log(max(alpha, 1.0e-12_dp) / slack)
+        p(3) = log(max(beta, 1.0e-12_dp) / slack)
+        p(4) = log(rr / (1.0_dp - rr))
+        p(5) = log(pp / (1.0_dp - pp))
+    end subroutine csgarch_inv_transform
+
+    subroutine csgarch_variance(y, params, variance)
+        real(dp), intent(in) :: y(:)
+        type(garch_params_t), intent(in) :: params
+        real(dp), intent(out) :: variance(:)
+        real(dp) :: backcast, h_prev, q_prev, h, qq, shock
+        integer :: t
+
+        backcast = max(sum(y**2) / real(size(y), dp), 1.0e-12_dp)
+        q_prev = params%omega / max(1.0_dp - params%extra1, 1.0e-8_dp)
+        q_prev = max(q_prev, 1.0e-12_dp)
+        h_prev = max(q_prev, backcast)
+        shock = backcast
+
+        do t = 1, size(y)
+            qq = params%omega + params%extra1*q_prev + params%extra2*(shock - h_prev)
+            qq = max(qq, 1.0e-12_dp)
+            h = qq + params%alpha*(shock - q_prev) + params%beta*(h_prev - q_prev)
+            h = max(h, 1.0e-12_dp)
+            variance(t) = h
+            q_prev = qq
+            h_prev = h
+            shock = y(t)**2
+        end do
+    end subroutine csgarch_variance
+
+    real(dp) function csgarch_value(p)
+        real(dp), intent(in) :: p(csgarch_np)
+        type(garch_params_t) :: params
+        real(dp), allocatable :: variance(:)
+        integer :: t
+
+        call csgarch_transform(p, params%omega, params%alpha, params%beta, params%extra1, params%extra2)
+        allocate(variance(csgarch_nobs))
+        call csgarch_variance(csgarch_obs, params, variance)
+        csgarch_value = real(csgarch_nobs, dp) * log_sqrt_2pi
+        do t = 1, csgarch_nobs
+            csgarch_value = csgarch_value + 0.5_dp * (log(variance(t)) + csgarch_obs(t)**2 / variance(t))
+        end do
+        csgarch_value = csgarch_value / real(csgarch_nobs, dp)
+        deallocate(variance)
+    end function csgarch_value
+
+    subroutine csgarch_obj(p, np, f, g)
+        integer,  intent(in)  :: np
+        real(dp), intent(in)  :: p(np)
+        real(dp), intent(out) :: f
+        real(dp), intent(out) :: g(np)
+        real(dp) :: pp(csgarch_np), fp, fm, step
+        integer :: i
+
+        f = csgarch_value(p)
+        do i = 1, np
+            step = 1.0e-5_dp * max(abs(p(i)), 1.0_dp)
+            pp = p
+            pp(i) = p(i) + step
+            fp = csgarch_value(pp)
+            pp = p
+            pp(i) = p(i) - step
+            fm = csgarch_value(pp)
+            g(i) = (fp - fm) / (2.0_dp*step)
+        end do
+    end subroutine csgarch_obj
 
     subroutine harch_transform(p, omega, alpha1, alpha5, alpha22)
         real(dp), intent(in)  :: p(harch_np)
@@ -2178,6 +2808,23 @@ contains
         deallocate(zz)
     end subroutine garch_skew_kurt
 
+    subroutine garch_pq_skew_kurt(y, params, skew, ekurt)
+        real(dp), intent(in)  :: y(:)
+        type(garch_params_t), intent(in) :: params
+        real(dp), intent(out) :: skew, ekurt
+        real(dp), allocatable :: variance(:), zz(:)
+        integer :: t, n
+
+        n = size(y)
+        allocate(variance(n), zz(n))
+        call symm_garch_pq_variance(y, params, variance)
+        do t = 1, n
+            zz(t) = y(t) / sqrt(max(variance(t), 1.0e-12_dp))
+        end do
+        call moments(zz, n, skew, ekurt)
+        deallocate(variance, zz)
+    end subroutine garch_pq_skew_kurt
+
     subroutine nagarch_skew_kurt(y, params, skew, ekurt)
         real(dp), intent(in)  :: y(:)
         type(garch_params_t), intent(in) :: params
@@ -2200,6 +2847,40 @@ contains
         call moments(zz, n, skew, ekurt)
         deallocate(zz)
     end subroutine nagarch_skew_kurt
+
+    subroutine nagarch_pq_skew_kurt(y, params, skew, ekurt)
+        real(dp), intent(in)  :: y(:)
+        type(garch_params_t), intent(in) :: params
+        real(dp), intent(out) :: skew, ekurt
+        real(dp), allocatable :: variance(:), zz(:)
+        integer :: t, n
+
+        n = size(y)
+        allocate(variance(n), zz(n))
+        call nagarch_pq_variance(y, params, variance)
+        do t = 1, n
+            zz(t) = y(t) / sqrt(max(variance(t), 1.0e-12_dp))
+        end do
+        call moments(zz, n, skew, ekurt)
+        deallocate(variance, zz)
+    end subroutine nagarch_pq_skew_kurt
+
+    subroutine csgarch_skew_kurt(y, params, skew, ekurt)
+        real(dp), intent(in)  :: y(:)
+        type(garch_params_t), intent(in) :: params
+        real(dp), intent(out) :: skew, ekurt
+        real(dp), allocatable :: variance(:), zz(:)
+        integer :: t, n
+
+        n = size(y)
+        allocate(variance(n), zz(n))
+        call csgarch_variance(y, params, variance)
+        do t = 1, n
+            zz(t) = y(t) / sqrt(max(variance(t), 1.0e-12_dp))
+        end do
+        call moments(zz, n, skew, ekurt)
+        deallocate(variance, zz)
+    end subroutine csgarch_skew_kurt
 
     subroutine qgarch_skew_kurt(y, params, skew, ekurt)
         real(dp), intent(in)  :: y(:)
@@ -2476,6 +3157,23 @@ contains
         deallocate(zz)
     end subroutine harch_skew_kurt
 
+    subroutine tgarch_skew_kurt(y, params, skew, ekurt)
+        real(dp), intent(in)  :: y(:)
+        type(garch_params_t), intent(in) :: params
+        real(dp), intent(out) :: skew, ekurt
+        real(dp), allocatable :: variance(:), zz(:)
+        integer :: t, n
+
+        n = size(y)
+        allocate(variance(n), zz(n))
+        call tgarch_variance(y, params, variance)
+        do t = 1, n
+            zz(t) = y(t) / sqrt(max(variance(t), 1.0e-12_dp))
+        end do
+        call moments(zz, n, skew, ekurt)
+        deallocate(variance, zz)
+    end subroutine tgarch_skew_kurt
+
     subroutine figarch_skew_kurt(y, params, skew, ekurt)
         real(dp), intent(in)  :: y(:)
         type(garch_params_t), intent(in) :: params
@@ -2604,6 +3302,21 @@ contains
         deallocate(zz)
     end subroutine ewma_skew_kurt
 
+    subroutine ewma_variance(y, params, variance)
+        real(dp), intent(in)  :: y(:)
+        type(garch_params_t), intent(in) :: params
+        real(dp), intent(out) :: variance(:)
+        real(dp) :: h
+        integer :: t
+
+        h = sample_variance(y)
+        do t = 1, size(y)
+            h = max(h, 1.0e-12_dp)
+            variance(t) = h
+            h = params%beta*h + params%alpha*y(t)**2
+        end do
+    end subroutine ewma_variance
+
     subroutine aewma_nag_skew_kurt(y, params, skew, ekurt)
         real(dp), intent(in)  :: y(:)
         type(garch_params_t), intent(in) :: params
@@ -2669,10 +3382,24 @@ contains
         symm_garch_persist = params%alpha + params%beta
     end function symm_garch_persist
 
+    real(dp) function symm_garch_pq_persist(params)
+        type(garch_params_t), intent(in) :: params
+        if (allocated(params%alpha_lags) .and. allocated(params%beta_lags)) then
+            symm_garch_pq_persist = sum(params%alpha_lags) + sum(params%beta_lags)
+        else
+            symm_garch_pq_persist = params%alpha + params%beta
+        end if
+    end function symm_garch_pq_persist
+
     real(dp) function qgarch_persist(params)
         type(garch_params_t), intent(in) :: params
         qgarch_persist = params%alpha + params%beta
     end function qgarch_persist
+
+    real(dp) function csgarch_persist(params)
+        type(garch_params_t), intent(in) :: params
+        csgarch_persist = params%extra1
+    end function csgarch_persist
 
     real(dp) function qgarch_mean_variance(params)
         type(garch_params_t), intent(in) :: params
@@ -2683,6 +3410,15 @@ contains
         type(garch_params_t), intent(in) :: params
         nagarch_persist = params%alpha * (1.0_dp + params%theta**2) + params%beta
     end function nagarch_persist
+
+    real(dp) function nagarch_pq_persist(params)
+        type(garch_params_t), intent(in) :: params
+        if (allocated(params%alpha_lags) .and. allocated(params%beta_lags)) then
+            nagarch_pq_persist = sum(params%alpha_lags) * (1.0_dp + params%theta**2) + sum(params%beta_lags)
+        else
+            nagarch_pq_persist = nagarch_persist(params)
+        end if
+    end function nagarch_pq_persist
 
     real(dp) function rgarch_persist(params)
         type(garch_params_t), intent(in) :: params
@@ -2728,6 +3464,11 @@ contains
         type(garch_params_t), intent(in) :: params
         harch_persist = params%alpha + params%gamma + params%beta
     end function harch_persist
+
+    real(dp) function tgarch_persist(params)
+        type(garch_params_t), intent(in) :: params
+        tgarch_persist = params%alpha*tgarch_kappa() + params%beta
+    end function tgarch_persist
 
     real(dp) function figarch_persist(params)
         type(garch_params_t), intent(in) :: params
