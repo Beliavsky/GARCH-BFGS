@@ -7,8 +7,9 @@
 program xfit_gen_garch_dist_returns
     use kind_mod, only: dp
     use csv_mod, only: read_price_csv, print_price_sample_info
-    use stats_mod, only: mean, sd
-    use garch_fit_dist_mod, only: garch_dist_fit_result_t, fit_garch_dist_model
+    use stats_mod, only: mean, sd, variance
+    use garch_fit_dist_mod, only: garch_dist_fit_result_t, fit_garch_dist_model, &
+        model_param_count, dist_param_count, dist_nu_value, dist_xi_value, dist_alpha_value
     implicit none
 
     character(len=*), parameter :: default_prices_file = "spy_efa_eem_tlt_lqd.csv"
@@ -100,7 +101,7 @@ program xfit_gen_garch_dist_returns
                 logl = -real(nobs, dp)*rows(nfit)%nll
                 aic = 2.0_dp*real(nparam, dp) - 2.0_dp*logl
                 bic = log(real(nobs, dp))*real(nparam, dp) - 2.0_dp*logl
-                vol_ann = sqrt(max(sample_variance(ret), 0.0_dp)*trading_days)*100.0_dp
+                vol_ann = sqrt(max(variance(ret), 0.0_dp)*trading_days)*100.0_dp
 
                 row_logl(nfit) = logl
                 row_aic(nfit) = aic
@@ -158,84 +159,6 @@ program xfit_gen_garch_dist_returns
     write(*,'(/,A,F10.3,A)') "Elapsed wall time: ", elapsed_s, " seconds"
 
 contains
-
-    integer function model_param_count(model_name)
-        character(len=*), intent(in) :: model_name
-
-        select case (trim(model_name))
-        case ("SYMM_GARCH", "GARCH")
-            model_param_count = 3
-        case ("NAGARCH", "GJR_GARCH", "GJR", "GJR_SIGNED", "EGARCH", "QGARCH")
-            model_param_count = 4
-        case default
-            model_param_count = 0
-        end select
-    end function model_param_count
-
-    integer function dist_param_count(dist_name)
-        character(len=*), intent(in) :: dist_name
-
-        select case (trim(dist_name))
-        case ("T", "GED", "NIG")
-            dist_param_count = 1
-        case ("FS_SKEWT")
-            dist_param_count = 2
-        case default
-            dist_param_count = 0
-        end select
-    end function dist_param_count
-
-    character(len=8) function dist_nu_value(dist_name, shape)
-        character(len=*), intent(in) :: dist_name
-        real(dp), intent(in) :: shape
-
-        select case (trim(dist_name))
-        case ("FS_SKEWT")
-            write(dist_nu_value, '(F8.3)') shape
-        case ("T", "GED")
-            write(dist_nu_value, '(F8.3)') shape
-        case default
-            dist_nu_value = "-"
-        end select
-    end function dist_nu_value
-
-    character(len=8) function dist_xi_value(dist_name, shape2)
-        character(len=*), intent(in) :: dist_name
-        real(dp), intent(in) :: shape2
-
-        select case (trim(dist_name))
-        case ("FS_SKEWT")
-            write(dist_xi_value, '(F8.3)') shape2
-        case default
-            dist_xi_value = "-"
-        end select
-    end function dist_xi_value
-
-    character(len=10) function dist_alpha_value(dist_name, shape)
-        character(len=*), intent(in) :: dist_name
-        real(dp), intent(in) :: shape
-
-        select case (trim(dist_name))
-        case ("NIG")
-            write(dist_alpha_value, '(F10.3)') shape
-        case default
-            dist_alpha_value = "-"
-        end select
-    end function dist_alpha_value
-
-    real(dp) function sample_variance(x)
-        real(dp), intent(in) :: x(:)
-        real(dp) :: xmean
-        integer :: n
-
-        n = size(x)
-        xmean = sum(x) / real(n, dp)
-        if (n > 1) then
-            sample_variance = sum((x - xmean)**2) / real(n - 1, dp)
-        else
-            sample_variance = 0.0_dp
-        end if
-    end function sample_variance
 
     subroutine print_asset_time_summary(asset_names, asset_seconds, converged_count, iter_total)
         character(len=*), intent(in) :: asset_names(:)
