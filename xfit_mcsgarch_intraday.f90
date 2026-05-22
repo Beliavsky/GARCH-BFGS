@@ -11,14 +11,15 @@ module fit_mcsgarch_intraday_mod
     use date_mod, only: date_label, yyyymmdd, seconds_per_minute, seconds_per_hour
     use market_data_mod, only: ohlcv_series_t, read_intraday_prices_csv, filter_intraday_session, intraday_bin_ids, &
                                default_bar_minutes, default_session_start_seconds
-    use garch_mcsgarch_mod, only: mcsgarch_fit_result_t, fit_mcsgarch, fit_mcsgarch_nagarch
+    use garch_mcsgarch_mod, only: mcsgarch_fit_result_t, fit_mcsgarch, fit_mcsgarch_nagarch, fit_mcsgarch_gjr, &
+                                  fit_mcsgarch_t, fit_mcsgarch_nagarch_t, fit_mcsgarch_gjr_t
     use stats_mod, only: mean
     implicit none
     private
 
     real(dp), parameter :: min_daily_var = 1.0e-12_dp
     real(dp), parameter :: trading_days_per_year = 252.0_dp
-    logical, parameter :: print_diurnal_curve = .true.
+    logical, parameter :: print_diurnal_curve = .false.
     logical, parameter :: write_diurnal_curve_csv = .true.
     logical, parameter :: write_forecast_history_csv = .true.
     logical, parameter :: smooth_diurnal_curve = .true.
@@ -36,8 +37,12 @@ contains
         type(ohlcv_series_t) :: bars, regular_bars
         real(dp), allocatable :: returns(:), daily_var(:), diurnal_var(:), q(:)
         real(dp), allocatable :: diurnal_sym(:), q_sym(:), diurnal_nag(:), q_nag(:)
+        real(dp), allocatable :: diurnal_gjr(:), q_gjr(:)
+        real(dp), allocatable :: diurnal_sym_t(:), q_sym_t(:), diurnal_nag_t(:), q_nag_t(:)
+        real(dp), allocatable :: diurnal_gjr_t(:), q_gjr_t(:)
         integer, allocatable :: bin_id(:), return_dates(:)
-        type(mcsgarch_fit_result_t) :: fit_sym, fit_nag
+        type(mcsgarch_fit_result_t) :: fit_sym, fit_nag, fit_gjr
+        type(mcsgarch_fit_result_t) :: fit_sym_t, fit_nag_t, fit_gjr_t
         integer :: nargs, max_iter, nobs
         real(dp) :: gtol, t_start, t0, t1, t_end, read_sec, elapsed_sec
 
@@ -55,7 +60,9 @@ contains
         call filter_intraday_session(bars, regular_bars)
         call build_mcsgarch_inputs(regular_bars, returns, daily_var, bin_id, return_dates)
         nobs = size(returns)
-        allocate(diurnal_var(nobs), q(nobs), diurnal_sym(nobs), q_sym(nobs), diurnal_nag(nobs), q_nag(nobs))
+        allocate(diurnal_var(nobs), q(nobs), diurnal_sym(nobs), q_sym(nobs), diurnal_nag(nobs), q_nag(nobs), &
+                 diurnal_gjr(nobs), q_gjr(nobs), diurnal_sym_t(nobs), q_sym_t(nobs), &
+                 diurnal_nag_t(nobs), q_nag_t(nobs), diurnal_gjr_t(nobs), q_gjr_t(nobs))
 
         call fit_mcsgarch(returns, daily_var, bin_id, max_iter, gtol, fit_sym, diurnal_sym, q_sym, &
                           smooth_diurnal=smooth_diurnal_curve, &
@@ -63,12 +70,29 @@ contains
         call fit_mcsgarch_nagarch(returns, daily_var, bin_id, max_iter, gtol, fit_nag, diurnal_nag, q_nag, &
                                   smooth_diurnal=smooth_diurnal_curve, &
                                   smooth_half_width=diurnal_smooth_half_width)
-        call select_best_fit_path(fit_sym, diurnal_sym, q_sym, fit_nag, diurnal_nag, q_nag, diurnal_var, q)
+        call fit_mcsgarch_gjr(returns, daily_var, bin_id, max_iter, gtol, fit_gjr, diurnal_gjr, q_gjr, &
+                              smooth_diurnal=smooth_diurnal_curve, &
+                              smooth_half_width=diurnal_smooth_half_width)
+        call fit_mcsgarch_t(returns, daily_var, bin_id, max_iter, gtol, fit_sym_t, diurnal_sym_t, q_sym_t, &
+                            smooth_diurnal=smooth_diurnal_curve, &
+                            smooth_half_width=diurnal_smooth_half_width)
+        call fit_mcsgarch_nagarch_t(returns, daily_var, bin_id, max_iter, gtol, fit_nag_t, diurnal_nag_t, q_nag_t, &
+                                    smooth_diurnal=smooth_diurnal_curve, &
+                                    smooth_half_width=diurnal_smooth_half_width)
+        call fit_mcsgarch_gjr_t(returns, daily_var, bin_id, max_iter, gtol, fit_gjr_t, diurnal_gjr_t, q_gjr_t, &
+                                smooth_diurnal=smooth_diurnal_curve, &
+                                smooth_half_width=diurnal_smooth_half_width)
+        call select_best_fit_path(fit_sym, diurnal_sym, q_sym, fit_nag, diurnal_nag, q_nag, &
+                                  fit_gjr, diurnal_gjr, q_gjr, fit_sym_t, diurnal_sym_t, q_sym_t, &
+                                  fit_nag_t, diurnal_nag_t, q_nag_t, fit_gjr_t, diurnal_gjr_t, q_gjr_t, &
+                                  diurnal_var, q)
         call cpu_time(t_end)
         elapsed_sec = t_end - t_start
         call print_fit_summary(trim(filename), regular_bars%nobs(), returns, daily_var, bin_id, return_dates, &
-                               fit_sym, fit_nag, read_sec, elapsed_sec)
-        call print_model_comparison(returns, daily_var, bin_id, fit_sym, diurnal_sym, q_sym, fit_nag, diurnal_nag, q_nag)
+                               fit_sym, fit_nag, fit_gjr, fit_sym_t, fit_nag_t, fit_gjr_t, read_sec, elapsed_sec)
+        call print_model_comparison(returns, daily_var, bin_id, fit_sym, diurnal_sym, q_sym, fit_nag, diurnal_nag, q_nag, &
+                                    fit_gjr, diurnal_gjr, q_gjr, fit_sym_t, diurnal_sym_t, q_sym_t, &
+                                    fit_nag_t, diurnal_nag_t, q_nag_t, fit_gjr_t, diurnal_gjr_t, q_gjr_t)
         if (print_diurnal_curve) call print_diurnal_variance_curve(bin_id, diurnal_var, &
                                                                     smooth_diurnal_curve, &
                                                                     diurnal_smooth_half_width)
@@ -78,7 +102,8 @@ contains
                                                                              returns, daily_var, bin_id, &
                                                                              return_dates, diurnal_var, q)
 
-        deallocate(returns, daily_var, bin_id, return_dates, diurnal_var, q, diurnal_sym, q_sym, diurnal_nag, q_nag)
+        deallocate(returns, daily_var, bin_id, return_dates, diurnal_var, q, diurnal_sym, q_sym, diurnal_nag, q_nag, &
+                   diurnal_gjr, q_gjr, diurnal_sym_t, q_sym_t, diurnal_nag_t, q_nag_t, diurnal_gjr_t, q_gjr_t)
     end subroutine run_fit_mcsgarch_intraday
 
     ! Convert regular-session bars into within-session returns and daily variance proxies.
@@ -165,12 +190,31 @@ contains
     end subroutine map_days
 
     ! Select the fitted variance path from the model with the higher log likelihood.
-    subroutine select_best_fit_path(fit_sym, diurnal_sym, q_sym, fit_nag, diurnal_nag, q_nag, diurnal_best, q_best)
-        type(mcsgarch_fit_result_t), intent(in) :: fit_sym, fit_nag
-        real(dp), intent(in) :: diurnal_sym(:), q_sym(:), diurnal_nag(:), q_nag(:)
+    subroutine select_best_fit_path(fit_sym, diurnal_sym, q_sym, fit_nag, diurnal_nag, q_nag, &
+                                    fit_gjr, diurnal_gjr, q_gjr, fit_sym_t, diurnal_sym_t, q_sym_t, &
+                                    fit_nag_t, diurnal_nag_t, q_nag_t, fit_gjr_t, diurnal_gjr_t, q_gjr_t, &
+                                    diurnal_best, q_best)
+        type(mcsgarch_fit_result_t), intent(in) :: fit_sym, fit_nag, fit_gjr, fit_sym_t, fit_nag_t, fit_gjr_t
+        real(dp), intent(in) :: diurnal_sym(:), q_sym(:), diurnal_nag(:), q_nag(:), diurnal_gjr(:), q_gjr(:)
+        real(dp), intent(in) :: diurnal_sym_t(:), q_sym_t(:), diurnal_nag_t(:), q_nag_t(:), diurnal_gjr_t(:), q_gjr_t(:)
         real(dp), intent(out) :: diurnal_best(:), q_best(:)
+        real(dp) :: best_loglik
 
-        if (fit_nag%loglik > fit_sym%loglik) then
+        best_loglik = max(fit_sym%loglik, fit_nag%loglik, fit_gjr%loglik, &
+                          fit_sym_t%loglik, fit_nag_t%loglik, fit_gjr_t%loglik)
+        if (fit_sym_t%loglik >= best_loglik) then
+            diurnal_best = diurnal_sym_t
+            q_best = q_sym_t
+        else if (fit_nag_t%loglik >= best_loglik) then
+            diurnal_best = diurnal_nag_t
+            q_best = q_nag_t
+        else if (fit_gjr_t%loglik >= best_loglik) then
+            diurnal_best = diurnal_gjr_t
+            q_best = q_gjr_t
+        else if (fit_gjr%loglik >= fit_sym%loglik .and. fit_gjr%loglik >= fit_nag%loglik) then
+            diurnal_best = diurnal_gjr
+            q_best = q_gjr
+        else if (fit_nag%loglik > fit_sym%loglik) then
             diurnal_best = diurnal_nag
             q_best = q_nag
         else
@@ -181,12 +225,12 @@ contains
 
     ! Print the fitted MCS-GARCH parameter rows and data/timing summary.
     subroutine print_fit_summary(filename, n_regular_bars, returns, daily_var, bin_id, return_dates, fit, &
-                                 fit_nag, read_sec, elapsed_sec)
+                                 fit_nag, fit_gjr, fit_t, fit_nag_t, fit_gjr_t, read_sec, elapsed_sec)
         character(len=*), intent(in) :: filename
         integer, intent(in) :: n_regular_bars
         real(dp), intent(in) :: returns(:), daily_var(:)
         integer, intent(in) :: bin_id(:), return_dates(:)
-        type(mcsgarch_fit_result_t), intent(in) :: fit, fit_nag
+        type(mcsgarch_fit_result_t), intent(in) :: fit, fit_nag, fit_gjr, fit_t, fit_nag_t, fit_gjr_t
         real(dp), intent(in) :: read_sec, elapsed_sec
 
         print '(A)', "MCS-GARCH intraday fits"
@@ -197,29 +241,43 @@ contains
         print '(A)', "Returns are within-session close-to-close log returns; overnight returns enter DailyVar only."
         print '(A,I0,A,I0)', "Intraday bin range: ", minval(bin_id), " to ", maxval(bin_id)
         print '(A,ES12.4,A,ES12.4)', "Mean DailyVar: ", mean(daily_var), "  mean return variance proxy: ", mean(returns**2)
-        print '(A)', "-----------------------------------------------------------------------------------------"
-        print '(A,10X,A,8X,A,8X,A,8X,A,7X,A,6X,A,8X,A,8X,A)', &
-              "Model", "omega", "alpha", "beta", "theta", "persist", "iter", "conv", "logL"
-        print '(A)', "-----------------------------------------------------------------------------------------"
-        print '(A,1X,ES12.4,4(1X,F10.4),1X,I8,5X,L1,1X,F13.3)', "MCSGARCH", &
-              fit%params%omega, fit%params%alpha, fit%params%beta, fit%params%theta, fit%persist, &
-              fit%niter, fit%converged, fit%loglik
-        print '(A,1X,ES12.4,4(1X,F10.4),1X,I8,5X,L1,1X,F13.3)', "MCSNAGARCH", &
-              fit_nag%params%omega, fit_nag%params%alpha, fit_nag%params%beta, fit_nag%params%theta, &
-              fit_nag%persist, fit_nag%niter, fit_nag%converged, fit_nag%loglik
-        print '(A)', "-----------------------------------------------------------------------------------------"
+        print '(A)', "----------------------------------------------------------------------------------------------------------------------------"
+        print '(A12,1X,A8,1X,A12,6(1X,A10),1X,A8,1X,A5,1X,A13)', &
+              "Model", "Dist", "omega", "alpha", "gamma", "beta", "theta", "nu", "persist", "iter", "conv", "logL"
+        print '(A)', "----------------------------------------------------------------------------------------------------------------------------"
+        call print_fit_row("MCSGARCH", "NORMAL", fit)
+        call print_fit_row("MCSNAGARCH", "NORMAL", fit_nag)
+        call print_fit_row("MCSGJRGARCH", "NORMAL", fit_gjr)
+        call print_fit_row("MCSGARCH", "T", fit_t)
+        call print_fit_row("MCSNAGARCH", "T", fit_nag_t)
+        call print_fit_row("MCSGJRGARCH", "T", fit_gjr_t)
+        print '(A)', "----------------------------------------------------------------------------------------------------------------------------"
         print '(A,F10.3)', "Data read seconds: ", read_sec
         print '(A,F10.3)', "Elapsed seconds:   ", elapsed_sec
     end subroutine print_fit_summary
 
-    ! Compare nested intraday volatility models with Gaussian logL, AIC, and BIC.
+    ! Print one fitted dynamic-model parameter row.
+    subroutine print_fit_row(model_name, dist_name, fit)
+        character(len=*), intent(in) :: model_name, dist_name
+        type(mcsgarch_fit_result_t), intent(in) :: fit
+
+        print '(A12,1X,A8,1X,ES12.4,6(1X,F10.4),1X,I8,5X,L1,1X,F13.3)', &
+              model_name, dist_name, fit%params%omega, fit%params%alpha, fit%params%gamma, &
+              fit%params%beta, fit%params%theta, fit%nu, fit%persist, fit%niter, fit%converged, fit%loglik
+    end subroutine print_fit_row
+
+    ! Compare nested intraday volatility models with IC values and residual moments.
     subroutine print_model_comparison(returns, daily_var, bin_id, fit_sym, diurnal_sym, q_sym, &
-                                      fit_nag, diurnal_nag, q_nag)
+                                      fit_nag, diurnal_nag, q_nag, fit_gjr, diurnal_gjr, q_gjr, &
+                                      fit_sym_t, diurnal_sym_t, q_sym_t, fit_nag_t, diurnal_nag_t, q_nag_t, &
+                                      fit_gjr_t, diurnal_gjr_t, q_gjr_t)
         real(dp), intent(in) :: returns(:), daily_var(:), diurnal_sym(:), q_sym(:), diurnal_nag(:), q_nag(:)
+        real(dp), intent(in) :: diurnal_gjr(:), q_gjr(:)
+        real(dp), intent(in) :: diurnal_sym_t(:), q_sym_t(:), diurnal_nag_t(:), q_nag_t(:), diurnal_gjr_t(:), q_gjr_t(:)
         integer, intent(in) :: bin_id(:)
-        type(mcsgarch_fit_result_t), intent(in) :: fit_sym, fit_nag
+        type(mcsgarch_fit_result_t), intent(in) :: fit_sym, fit_nag, fit_gjr, fit_sym_t, fit_nag_t, fit_gjr_t
         real(dp), allocatable :: h(:), unit_scale(:)
-        real(dp) :: loglik, aic, bic, sigma2
+        real(dp) :: sigma2
         integer :: nobs, k, nbins_used
 
         nobs = size(returns)
@@ -228,51 +286,75 @@ contains
 
         print '(A)', ""
         print '(A)', "Intraday volatility model comparison"
-        print '(A)', "----------------------------------------------------------------------"
-        print '(A36,1X,A8,1X,A14,1X,A14,1X,A14)', "Model", "k", "logL", "AIC", "BIC"
-        print '(A)', "----------------------------------------------------------------------"
+        print '(A)', "--------------------------------------------------------------------------------------------------------------"
+        print '(A36,1X,A8,1X,A8,1X,A14,1X,A14,1X,A14,1X,A8,1X,A10,1X,A10)', &
+              "Model", "Dist", "k", "logL", "AIC", "BIC", "nu", "skew", "ex_kurt"
+        print '(A)', "--------------------------------------------------------------------------------------------------------------"
 
         sigma2 = max(sum(returns**2) / real(nobs, dp), min_daily_var)
         h = sigma2
         k = 1
-        call print_model_comparison_row("constant intraday volatility", k, gaussian_loglik(returns, h), nobs)
+        call print_model_comparison_row("constant intraday volatility", "NORMAL", k, returns, h)
 
         call bin_scaled_variance_path(returns, unit_scale, bin_id, h, nbins_used)
         k = nbins_used
-        call print_model_comparison_row("diurnal multiplier only", k, gaussian_loglik(returns, h), nobs)
+        call print_model_comparison_row("diurnal multiplier only", "NORMAL", k, returns, h)
 
         call bin_scaled_variance_path(returns, daily_var, bin_id, h, nbins_used)
         k = nbins_used
-        call print_model_comparison_row("daily volatility x diurnal", k, gaussian_loglik(returns, h), nobs)
+        call print_model_comparison_row("daily volatility x diurnal", "NORMAL", k, returns, h)
 
         h = max(daily_var * diurnal_sym * q_sym, min_daily_var)
         k = count_populated_bins(bin_id) + 3
-        loglik = fit_sym%loglik
-        aic = -2.0_dp*loglik + 2.0_dp*real(k, dp)
-        bic = -2.0_dp*loglik + real(k, dp)*log(real(nobs, dp))
-        print '(A36,1X,I8,1X,F14.3,1X,F14.3,1X,F14.3)', "MCS-GARCH", k, loglik, aic, bic
+        call print_model_comparison_row("MCS-GARCH", "NORMAL", k, returns, h, loglik_override=fit_sym%loglik)
 
         h = max(daily_var * diurnal_nag * q_nag, min_daily_var)
         k = count_populated_bins(bin_id) + 4
-        loglik = fit_nag%loglik
-        aic = -2.0_dp*loglik + 2.0_dp*real(k, dp)
-        bic = -2.0_dp*loglik + real(k, dp)*log(real(nobs, dp))
-        print '(A36,1X,I8,1X,F14.3,1X,F14.3,1X,F14.3)', "MCS-NAGARCH", k, loglik, aic, bic
+        call print_model_comparison_row("MCS-NAGARCH", "NORMAL", k, returns, h, loglik_override=fit_nag%loglik)
 
-        print '(A)', "----------------------------------------------------------------------"
+        h = max(daily_var * diurnal_gjr * q_gjr, min_daily_var)
+        k = count_populated_bins(bin_id) + 4
+        call print_model_comparison_row("MCS-GJRGARCH", "NORMAL", k, returns, h, loglik_override=fit_gjr%loglik)
+
+        h = max(daily_var * diurnal_sym_t * q_sym_t, min_daily_var)
+        k = count_populated_bins(bin_id) + 4
+        call print_model_comparison_row("MCS-GARCH", "T", k, returns, h, loglik_override=fit_sym_t%loglik, nu=fit_sym_t%nu)
+
+        h = max(daily_var * diurnal_nag_t * q_nag_t, min_daily_var)
+        k = count_populated_bins(bin_id) + 5
+        call print_model_comparison_row("MCS-NAGARCH", "T", k, returns, h, loglik_override=fit_nag_t%loglik, nu=fit_nag_t%nu)
+
+        h = max(daily_var * diurnal_gjr_t * q_gjr_t, min_daily_var)
+        k = count_populated_bins(bin_id) + 5
+        call print_model_comparison_row("MCS-GJRGARCH", "T", k, returns, h, loglik_override=fit_gjr_t%loglik, nu=fit_gjr_t%nu)
+
+        print '(A)', "--------------------------------------------------------------------------------------------------------------"
         deallocate(h, unit_scale)
     end subroutine print_model_comparison
 
-    ! Print one row of the intraday volatility model comparison table.
-    subroutine print_model_comparison_row(model_name, k, loglik, nobs)
-        character(len=*), intent(in) :: model_name
-        integer, intent(in) :: k, nobs
-        real(dp), intent(in) :: loglik
-        real(dp) :: aic, bic
+    ! Print one model-comparison row from a variance path and standardized residual moments.
+    subroutine print_model_comparison_row(model_name, dist_name, k, returns, h, loglik_override, nu)
+        character(len=*), intent(in) :: model_name, dist_name
+        integer, intent(in) :: k
+        real(dp), intent(in) :: returns(:), h(:)
+        real(dp), intent(in), optional :: loglik_override, nu
+        real(dp) :: loglik, aic, bic, skew, ex_kurt, nu_print
+        integer :: nobs
+
+        nobs = size(returns)
+        if (present(loglik_override)) then
+            loglik = loglik_override
+        else
+            loglik = gaussian_loglik(returns, h)
+        end if
+        call standardized_residual_moments(returns, h, skew, ex_kurt)
+        nu_print = 0.0_dp
+        if (present(nu)) nu_print = nu
 
         aic = -2.0_dp*loglik + 2.0_dp*real(k, dp)
         bic = -2.0_dp*loglik + real(k, dp)*log(real(nobs, dp))
-        print '(A36,1X,I8,1X,F14.3,1X,F14.3,1X,F14.3)', model_name, k, loglik, aic, bic
+        print '(A36,1X,A8,1X,I8,1X,F14.3,1X,F14.3,1X,F14.3,1X,F8.3,1X,F10.4,1X,F10.4)', &
+              model_name, dist_name, k, loglik, aic, bic, nu_print, skew, ex_kurt
     end subroutine print_model_comparison_row
 
     ! Estimate a per-bin variance multiplier around a supplied variance scale.
@@ -327,6 +409,38 @@ contains
                               0.5_dp*returns(i)**2 / max(h(i), min_daily_var)
         end do
     end function gaussian_loglik
+
+    ! Compute skewness and excess kurtosis of standardized residuals.
+    subroutine standardized_residual_moments(returns, h, skew, ex_kurt)
+        real(dp), intent(in) :: returns(:), h(:)
+        real(dp), intent(out) :: skew, ex_kurt
+        real(dp) :: z, m1, m2, m3, m4, centered
+        integer :: i, n
+
+        if (size(returns) /= size(h)) error stop "standardized_residual_moments: array sizes differ"
+        n = size(returns)
+        m1 = 0.0_dp
+        do i = 1, n
+            m1 = m1 + returns(i) / sqrt(max(h(i), min_daily_var))
+        end do
+        m1 = m1 / real(n, dp)
+
+        m2 = 0.0_dp
+        m3 = 0.0_dp
+        m4 = 0.0_dp
+        do i = 1, n
+            z = returns(i) / sqrt(max(h(i), min_daily_var))
+            centered = z - m1
+            m2 = m2 + centered**2
+            m3 = m3 + centered**3
+            m4 = m4 + centered**4
+        end do
+        m2 = max(m2 / real(n, dp), min_daily_var)
+        m3 = m3 / real(n, dp)
+        m4 = m4 / real(n, dp)
+        skew = m3 / m2**1.5_dp
+        ex_kurt = m4 / m2**2 - 3.0_dp
+    end subroutine standardized_residual_moments
 
     ! Count the number of intraday bins represented in the return sample.
     integer function count_populated_bins(bin_id)
