@@ -109,10 +109,10 @@ program xarch_lw
 ! Profile linear-weight ARCH over k = 1..K_max; compare against GARCH(1,1).
 
 use kind_mod,       only: dp
-use csv_mod,        only: read_price_csv
+use csv_mod,        only: read_price_csv, print_price_sample_info
 use arch_lw_mod,    only: lw_set_data, lw_set_k, lw_obj, lw_transform, lw_inv_transform
-use garch_module,   only: garch_set_data, garch_obj, garch_transform, garch_inv_transform
-use bfgs_module,    only: bfgs_minimize
+use garch_mod,   only: garch_set_data, garch_obj, garch_transform, garch_inv_transform
+use bfgs_mod,    only: bfgs_minimize
 use stats_mod,      only: mean, sd
 implicit none
 
@@ -168,7 +168,7 @@ nobs    = min(nret, nall)
 i1      = nprices - nobs
 allocate(raw_ret(nobs), ret(nobs))
 
-write(*, '(A,I0,A,I0,A)') "Using last ", nobs, " of ", nall, " observations"
+call print_price_sample_info(prices_file, dates, ncols, nobs)
 write(*, *)
 
 do icol = 1, ncols

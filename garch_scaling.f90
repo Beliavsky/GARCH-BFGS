@@ -4,9 +4,9 @@
 
 program garch_scaling
     use kind_mod,     only: dp
-    use garch_module, only: garch_simulate, garch_set_data, garch_inv_transform, &
+    use garch_mod, only: garch_simulate, garch_set_data, garch_inv_transform, &
                             garch_obj, garch_transform
-    use bfgs_module,  only: bfgs_minimize
+    use bfgs_mod,  only: bfgs_minimize
     implicit none
 
     ! ---- tuneable parameters ----

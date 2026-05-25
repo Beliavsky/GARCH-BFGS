@@ -6,17 +6,17 @@ program xfit_garch_dist_returns
 ! log-likelihood, AIC, BIC, and model ranks per asset.
 
 use kind_mod,       only: dp
-use csv_mod,        only: read_price_csv
+use csv_mod,        only: read_price_csv, print_price_sample_info
 use garch_flex_mod, only: flex_set_data, flex_set_types, flex_np, flex_obj, &
                           proc_garch, proc_nagarch, proc_gjr, proc_egarch, &
                            proc_names, &
                            dist_normal, dist_t, dist_sech, dist_ged, &
                            dist_laplace, dist_logistic, dist_nig
-use garch_module,   only: garch_inv_transform,   garch_transform
-use nagarch_module, only: nagarch_inv_transform, nagarch_transform
-use gjr_module,     only: gjr_inv_transform,     gjr_transform
-use egarch_module,  only: egarch_inv_transform,  egarch_transform
-use bfgs_module,    only: bfgs_minimize
+use garch_mod,   only: garch_inv_transform,   garch_transform
+use nagarch_mod, only: nagarch_inv_transform, nagarch_transform
+use gjr_mod,     only: gjr_inv_transform,     gjr_transform
+use egarch_mod,  only: egarch_inv_transform,  egarch_transform
+use bfgs_mod,    only: bfgs_minimize
 use stats_mod,      only: mean, sd
 use rank_mod,       only: rank_desc, rank_asc
 implicit none
@@ -99,8 +99,9 @@ nobs    = min(nret, nall)
 i1_price = nprices-nobs
 allocate(raw_ret(nobs), ret(nobs))
 
-write(*, '(A,I0,A,I0,A,A,/)') "Using last ", nobs, " of ", nall, " observations, ", &
-    merge("log returns   ", "simple returns", log_ret)
+call print_price_sample_info(prices_file, dates, ncols, nobs, &
+    merge("demeaned log returns   ", "demeaned simple returns", log_ret))
+write(*,*)
 
 ! ── loop over assets ─────────────────────────────────────────────────────────
 do icol = 1, ncols

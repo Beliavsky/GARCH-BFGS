@@ -1,8 +1,10 @@
 ! GARCH(1,1) with NAGARCH variance equation and Normal innovations.
 !
 ! Variance equation:
-!   h_t = omega + alpha*(y_{t-1} - theta*sqrt(h_{t-1}))^2 + beta*h_{t-1}
-!   h_1 = omega / (1 - alpha*(1+theta^2) - beta)
+!   h_t = omega + alpha*q_{t-1}^2 + beta*h_{t-1}
+!   q_t = y_t - theta*sqrt(h_t) by default, or max(theta*sqrt(h_t)-y_t, 0)
+!         when zero-above-shift news impact is enabled.
+!   h_1 = omega / (1 - alpha*E(q_t^2/h_t) - beta)
 !   omega > 0,  alpha > 0,  beta > 0,  theta unconstrained
 !   Stationarity: alpha*(1+theta^2) + beta < 1
 !
@@ -19,21 +21,32 @@
 !   p3 = log(beta              / (1 - alpha*(1+theta^2) - beta))
 !   p4 = theta
 
-module nagarch_module
+module nagarch_mod
     use kind_mod,       only: dp
-    use math_const_mod, only: log_sqrt_2pi, two_pi
+    use math_const_mod, only: log_sqrt_2pi, two_pi, sqrt2
     implicit none
     private
 
     real(dp), allocatable, save :: gna_obs(:)  ! stored observations
     integer,               save :: gna_nobs = 0
     real(dp),              save :: gna_target_var = 0.0_dp   ! variance target for VT variant
+    logical,               save :: gna_zero_above_shift = .false.
 
     public :: nagarch_set_data, nagarch_simulate, nagarch_obj, &
               nagarch_transform, nagarch_inv_transform, &
-              nagarch_vt_set_target, nagarch_vt_transform, nagarch_vt_inv_transform, nagarch_vt_obj
+              nagarch_vt_set_target, nagarch_vt_transform, nagarch_vt_inv_transform, nagarch_vt_obj, &
+              nagarch_set_news_impact, nagarch_news_impact_zero_above
 
 contains
+
+    subroutine nagarch_set_news_impact(zero_above_shift)
+        logical, intent(in) :: zero_above_shift
+        gna_zero_above_shift = zero_above_shift
+    end subroutine nagarch_set_news_impact
+
+    logical function nagarch_news_impact_zero_above()
+        nagarch_news_impact_zero_above = gna_zero_above_shift
+    end function nagarch_news_impact_zero_above
 
     subroutine nagarch_set_data(y, n)
         ! Store observations for use by nagarch_obj.
@@ -49,15 +62,16 @@ contains
         ! Unconstrained p(4) -> constrained (omega, alpha, beta, theta).
         real(dp), intent(in)  :: p(4)
         real(dp), intent(out) :: omega, alpha, beta, theta  ! NAGARCH parameters
-        real(dp) :: e2, e3, s, aa
+        real(dp) :: e2, e3, s, aa, shift_moment, dmoment_unused
         omega = exp(p(1))
         theta = p(4)
+        call nagarch_shift_moments(theta, shift_moment, dmoment_unused)
         e2    = exp(p(2))
         e3    = exp(p(3))
         s     = 1.0_dp + e2 + e3
-        aa    = e2 / s                        ! aa = alpha*(1+theta^2)
+        aa    = e2 / s
         beta  = e3 / s
-        alpha = aa / (1.0_dp + theta**2)
+        alpha = aa / shift_moment
     end subroutine nagarch_transform
 
     subroutine nagarch_inv_transform(omega, alpha, beta, theta, p)
@@ -65,8 +79,9 @@ contains
         ! Requires omega > 0, alpha > 0, beta > 0, alpha*(1+theta^2)+beta < 1.
         real(dp), intent(in)  :: omega, alpha, beta, theta  ! NAGARCH parameters
         real(dp), intent(out) :: p(4)
-        real(dp) :: aa, gam
-        aa   = alpha * (1.0_dp + theta**2)
+        real(dp) :: aa, gam, shift_moment, dmoment_unused
+        call nagarch_shift_moments(theta, shift_moment, dmoment_unused)
+        aa   = alpha * shift_moment
         gam  = 1.0_dp - aa - beta            ! stationarity slack
         p(1) = log(omega)
         p(2) = log(aa   / gam)
@@ -81,7 +96,7 @@ contains
         integer,  intent(in)  :: n                          ! number of observations
         integer,  intent(in)  :: seed_val                   ! RNG seed
         real(dp), intent(out) :: y(n)                       ! simulated return series
-        real(dp) :: h, sqrth, r, u1, u2, eps
+        real(dp) :: h, sqrth, r, u1, u2, eps, shift_moment, dmoment_unused
         integer  :: i, sz
         integer, allocatable :: seed_arr(:)
 
@@ -91,7 +106,8 @@ contains
         call random_seed(put=seed_arr)
         deallocate(seed_arr)
 
-        h = omega / (1.0_dp - alpha*(1.0_dp + theta**2) - beta)
+        call nagarch_shift_moments(theta, shift_moment, dmoment_unused)
+        h = omega / (1.0_dp - alpha*shift_moment - beta)
         do i = 1, n
             do
                 call random_number(u1)
@@ -102,6 +118,7 @@ contains
             sqrth = sqrt(h)
             y(i)  = sqrth * eps
             r     = y(i) - theta * sqrth     ! shifted residual
+            if (gna_zero_above_shift .and. r > 0.0_dp) r = 0.0_dp
             h     = omega + alpha*r**2 + beta*h
         end do
     end subroutine nagarch_simulate
@@ -137,14 +154,15 @@ contains
         real(dp), intent(out) :: g(np)  ! gradient of NLL/n
 
         real(dp) :: omega, alpha, beta, theta
-        real(dp) :: h, sqrth, r, kappa, s2, D, h_unc, aa
+        real(dp) :: h, sqrth, r, kappa, s2, D, h_unc, aa, dmom
         real(dp) :: dh_dom, dh_dal, dh_dbe, dh_dth
         real(dp) :: grad_om, grad_al, grad_be, grad_th, factor
+        logical  :: active
         integer  :: t
 
         call nagarch_transform(p, omega, alpha, beta, theta)
 
-        s2    = 1.0_dp + theta**2
+        call nagarch_shift_moments(theta, s2, dmom)
         D     = 1.0_dp - alpha*s2 - beta
         h_unc = omega / D
 
@@ -153,7 +171,7 @@ contains
         dh_dom = 1.0_dp / D
         dh_dal = h_unc * s2 / D
         dh_dbe = h_unc / D
-        dh_dth = 2.0_dp * theta * alpha * h_unc / D
+        dh_dth = alpha * dmom * h_unc / D
 
         f       = real(gna_nobs, dp) * log_sqrt_2pi
         grad_om = 0.0_dp
@@ -171,11 +189,18 @@ contains
             ! update recurrences for h_{t+1} using r_{t+1} = y_t - theta*sqrt(h_t)
             sqrth  = sqrt(h)
             r      = gna_obs(t) - theta * sqrth
-            kappa  = beta - alpha * theta * r / sqrth
+            active = .true.
+            if (gna_zero_above_shift .and. r > 0.0_dp) then
+                r = 0.0_dp
+                active = .false.
+            end if
+            kappa  = beta
+            if (active) kappa = beta - alpha * theta * r / sqrth
             dh_dom = 1.0_dp                + kappa * dh_dom
             dh_dal = r**2                  + kappa * dh_dal
             dh_dbe = h                     + kappa * dh_dbe
-            dh_dth = -2.0_dp*alpha*r*sqrth + kappa * dh_dth
+            dh_dth = kappa * dh_dth
+            if (active) dh_dth = dh_dth - 2.0_dp*alpha*r*sqrth
             h      = omega + alpha*r**2 + beta*h
         end do
 
@@ -184,7 +209,7 @@ contains
         g(1) =  grad_om * omega
         g(2) =  grad_al * alpha*(1.0_dp - aa) - grad_be * aa*beta
         g(3) = -grad_al * alpha*beta           + grad_be * beta*(1.0_dp - beta)
-        g(4) =  grad_al * (-2.0_dp*theta*alpha/s2) + grad_th
+        g(4) =  grad_al * (-alpha*dmom/s2) + grad_th
 
         f = f / gna_nobs
         g = g / gna_nobs
@@ -213,20 +238,22 @@ contains
         ! p(1:3) -> (alpha, beta, theta); aa=alpha*(1+theta^2) via softmax on p(1:2).
         real(dp), intent(in)  :: p(3)
         real(dp), intent(out) :: alpha, beta, theta
-        real(dp) :: e1, e2, s, aa
+        real(dp) :: e1, e2, s, aa, shift_moment, dmoment_unused
         theta = p(3)
+        call nagarch_shift_moments(theta, shift_moment, dmoment_unused)
         e1    = exp(p(1));  e2 = exp(p(2))
         s     = 1.0_dp + e1 + e2
         aa    = e1 / s;     beta  = e2 / s
-        alpha = aa / (1.0_dp + theta**2)
+        alpha = aa / shift_moment
     end subroutine nagarch_vt_transform
 
     subroutine nagarch_vt_inv_transform(alpha, beta, theta, p)
         ! (alpha, beta, theta) -> p(1:3).
         real(dp), intent(in)  :: alpha, beta, theta
         real(dp), intent(out) :: p(3)
-        real(dp) :: aa, gam
-        aa   = alpha * (1.0_dp + theta**2)
+        real(dp) :: aa, gam, shift_moment, dmoment_unused
+        call nagarch_shift_moments(theta, shift_moment, dmoment_unused)
+        aa   = alpha * shift_moment
         gam  = 1.0_dp - aa - beta
         p(1) = log(aa   / gam)
         p(2) = log(beta / gam)
@@ -243,13 +270,14 @@ contains
         integer,  intent(in)  :: np
         real(dp), intent(in)  :: p(np)
         real(dp), intent(out) :: f, g(np)
-        real(dp) :: alpha, beta, theta, omega, s2, aa
+        real(dp) :: alpha, beta, theta, omega, s2, aa, dmom
         real(dp) :: h, sqrth, r, kappa
         real(dp) :: dh_dal, dh_dbe, dh_dth
         real(dp) :: grad_al, grad_be, grad_th, factor
+        logical  :: active
         integer  :: t
         call nagarch_vt_transform(p, alpha, beta, theta)
-        s2    = 1.0_dp + theta**2
+        call nagarch_shift_moments(theta, s2, dmom)
         omega = gna_target_var * (1.0_dp - alpha*s2 - beta)
         h     = gna_target_var     ! h_1 = target by construction
         dh_dal = 0.0_dp;  dh_dbe = 0.0_dp;  dh_dth = 0.0_dp
@@ -263,17 +291,39 @@ contains
             grad_th = grad_th + 0.5_dp * factor * dh_dth
             sqrth  = sqrt(h)
             r      = gna_obs(t) - theta * sqrth
-            kappa  = beta - alpha * theta * r / sqrth
+            active = .true.
+            if (gna_zero_above_shift .and. r > 0.0_dp) then
+                r = 0.0_dp
+                active = .false.
+            end if
+            kappa  = beta
+            if (active) kappa = beta - alpha * theta * r / sqrth
             dh_dal = -gna_target_var*s2                     + r**2             + kappa * dh_dal
             dh_dbe = -gna_target_var                        + h                + kappa * dh_dbe
-            dh_dth = -2.0_dp*gna_target_var*alpha*theta - 2.0_dp*alpha*r*sqrth + kappa * dh_dth
+            dh_dth = -gna_target_var*alpha*dmom + kappa * dh_dth
+            if (active) dh_dth = dh_dth - 2.0_dp*alpha*r*sqrth
             h      = omega + alpha*r**2 + beta*h
         end do
         aa   = alpha * s2
         g(1) =  grad_al * alpha*(1.0_dp - aa)        - grad_be * aa*beta
         g(2) = -grad_al * alpha*beta                 + grad_be * beta*(1.0_dp - beta)
-        g(3) =  grad_al * (-2.0_dp*theta*alpha/s2)   + grad_th
+        g(3) =  grad_al * (-alpha*dmom/s2)            + grad_th
         f = f / gna_nobs;  g = g / gna_nobs
     end subroutine nagarch_vt_obj
 
-end module nagarch_module
+    subroutine nagarch_shift_moments(theta, moment, dmoment)
+        real(dp), intent(in)  :: theta
+        real(dp), intent(out) :: moment, dmoment
+        real(dp) :: cdf, pdf
+        if (gna_zero_above_shift) then
+            cdf     = 0.5_dp * (1.0_dp + erf(theta / sqrt2))
+            pdf     = exp(-0.5_dp * theta**2 - log_sqrt_2pi)
+            moment  = (1.0_dp + theta**2) * cdf + theta * pdf
+            dmoment = 2.0_dp * (theta * cdf + pdf)
+        else
+            moment  = 1.0_dp + theta**2
+            dmoment = 2.0_dp * theta
+        end if
+    end subroutine nagarch_shift_moments
+
+end module nagarch_mod

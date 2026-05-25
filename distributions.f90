@@ -12,6 +12,7 @@
 !   dist_laplace  (5)  Laplace                   no shape parameter
 !   dist_sech     (6)  Hyperbolic secant         no shape parameter
 !   dist_nig      (7)  Symmetric NIG, alp > 0    alp: tail/shape parameter
+!   dist_fs_skewt (8)  Fernandez-Steel skew-t    nu: df, xi: skew (>0)
 !
 ! Additional PDFs (not wired into fit_dist):
 !   pdf_nig_gen(x, alp, bet)  General NIG, alp > |bet|.
@@ -45,7 +46,7 @@
 module distributions_mod
     use kind_mod,       only: dp
     use math_const_mod, only: pi, two_pi, sqrt2, sqrt3, log2, half_log2, log_sqrt_2pi
-    use bfgs_module,    only: bfgs_minimize
+    use bfgs_mod,    only: bfgs_minimize
     use special_mod,    only: bessel_k01, bessel_k_nu
     implicit none
     private
@@ -59,15 +60,16 @@ module distributions_mod
     integer, parameter, public :: dist_laplace  = 5
     integer, parameter, public :: dist_sech     = 6
     integer, parameter, public :: dist_nig      = 7
-    integer, parameter, public :: dist_count    = 7
+    integer, parameter, public :: dist_fs_skewt = 8
+    integer, parameter, public :: dist_count    = 8
 
     character(len=8), dimension(dist_count), parameter, public :: dist_names = &
         ["normal  ", "t       ", "ged     ", "logistic", &
-         "laplace ", "sech    ", "nig     "]
+         "laplace ", "sech    ", "nig     ", "fs_skewt"]
 
     ! Number of shape parameters estimated by fit_dist_std (0 or 1 per distribution).
     integer, dimension(dist_count), parameter, public :: dist_npar_std = &
-        [0, 1, 1, 0, 0, 0, 1]
+        [0, 1, 1, 0, 0, 0, 1, 2]
 
     ! ── Module-level state for BFGS callbacks ─────────────────────────────────
 
@@ -79,6 +81,7 @@ module distributions_mod
     ! ── Public interface ──────────────────────────────────────────────────────
 
     public :: pdf_normal, pdf_t, pdf_ged, pdf_logistic, pdf_laplace, pdf_sech, pdf_nig
+    public :: pdf_fs_skewt
     public :: pdf_nig_gen
     public :: pdf_vg_sym, pdf_vg_gen
     public :: fit_dist_std, fit_dist
@@ -151,6 +154,29 @@ contains
         call bessel_k01(alp * sqrt(a2px2), lk1, ratio)
         f = exp(2.0_dp*log(alp) - log(pi) + alp**2 + lk1 - 0.5_dp*log(a2px2))
     end function pdf_nig
+
+    pure elemental function pdf_fs_skewt(x, nu, xi) result(f)
+        ! Fernandez-Steel skewed Student-t, standardised to mean 0 and variance 1.
+        ! xi=1 recovers the standardised symmetric t(nu).
+        real(dp), intent(in) :: x, nu, xi
+        real(dp) :: f, xip, xim, c, m1, raw_mean, raw_second, raw_sd, y, base_arg
+
+        xip = max(xi, 1.0e-8_dp)
+        xim = 1.0_dp / xip
+        m1 = sqrt(nu - 2.0_dp) * exp(log_gamma(0.5_dp*(nu - 1.0_dp)) - &
+             0.5_dp*log(pi) - log_gamma(0.5_dp*nu))
+        raw_mean = m1 * (xip - xim)
+        raw_second = (xip**3 + xim**3) / (xip + xim)
+        raw_sd = sqrt(max(raw_second - raw_mean**2, 1.0e-12_dp))
+        y = raw_mean + raw_sd*x
+        c = 2.0_dp / (xip + xim)
+        if (y >= 0.0_dp) then
+            base_arg = y / xip
+        else
+            base_arg = y * xip
+        end if
+        f = raw_sd * c * pdf_t(base_arg, nu)
+    end function pdf_fs_skewt
 
     pure elemental function pdf_nig_gen(x, alp, bet) result(f)
         ! General NIG, unit variance.  alp > |bet| >= 0.

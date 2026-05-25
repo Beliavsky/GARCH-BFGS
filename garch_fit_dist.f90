@@ -3,6 +3,7 @@ module garch_fit_dist_mod
     use garch_types_mod, only: garch_params_t
     use distributions_mod, only: pdf_normal, pdf_t, pdf_ged, pdf_logistic, pdf_laplace, pdf_sech, pdf_nig, pdf_fs_skewt
     use garch_fit_mod, only: fit_symm_garch, fit_nagarch, fit_gjr, fit_gjr_signed, fit_egarch, fit_qgarch
+    use stats_mod, only: variance
     use bfgs_mod, only: bfgs_minimize
     implicit none
     private
@@ -36,7 +37,8 @@ module garch_fit_dist_mod
     integer, save :: obj_dist = dist_normal
     integer, save :: obj_np = 0
 
-    public :: fit_garch_dist_model, garch_dist_oos_nll, garch_dist_persist
+    public :: fit_garch_dist_model, garch_dist_oos_nll, garch_dist_persist, garch_dist_variance_path
+    public :: model_param_count, dist_param_count, dist_nu_value, dist_xi_value, dist_alpha_value
 
 contains
 
@@ -133,6 +135,15 @@ contains
         deallocate(h)
     end function garch_dist_oos_nll
 
+    subroutine garch_dist_variance_path(model_name, y, params, h)
+        character(len=*), intent(in) :: model_name
+        real(dp), intent(in) :: y(:)
+        type(garch_params_t), intent(in) :: params
+        real(dp), intent(out) :: h(:)
+
+        call variance_path(canonical_model(model_name), y, params, h)
+    end subroutine garch_dist_variance_path
+
     real(dp) function nll_model_dist(model_name, dist_id, y, params, shape, shape2)
         character(len=*), intent(in) :: model_name
         integer, intent(in) :: dist_id
@@ -166,7 +177,7 @@ contains
         real(dp) :: lh, z, c_eg, sqrth, ind, var0
         integer :: t
 
-        var0 = max(sample_variance(y), min_h)
+        var0 = max(variance(y), min_h)
         select case (model_name)
         case ("SYMM_GARCH", "GARCH")
             h(1) = max(params%omega / max(1.0_dp - params%alpha - params%beta, 1.0e-8_dp), var0)
@@ -400,6 +411,19 @@ contains
         end select
     end function model_npar
 
+    integer function model_param_count(model_name)
+        character(len=*), intent(in) :: model_name
+
+        select case (trim(model_name))
+        case ("SYMM_GARCH", "GARCH")
+            model_param_count = 3
+        case ("NAGARCH", "GJR_GARCH", "GJR", "GJR_SIGNED", "EGARCH", "QGARCH")
+            model_param_count = 4
+        case default
+            model_param_count = 0
+        end select
+    end function model_param_count
+
     integer function dist_nshape(dist_id)
         integer, intent(in) :: dist_id
         select case (dist_id)
@@ -411,6 +435,57 @@ contains
             dist_nshape = 0
         end select
     end function dist_nshape
+
+    integer function dist_param_count(dist_name)
+        character(len=*), intent(in) :: dist_name
+
+        select case (trim(dist_name))
+        case ("T", "GED", "NIG")
+            dist_param_count = 1
+        case ("FS_SKEWT")
+            dist_param_count = 2
+        case default
+            dist_param_count = 0
+        end select
+    end function dist_param_count
+
+    character(len=8) function dist_nu_value(dist_name, shape)
+        character(len=*), intent(in) :: dist_name
+        real(dp), intent(in) :: shape
+
+        select case (trim(dist_name))
+        case ("FS_SKEWT")
+            write(dist_nu_value, '(F8.3)') shape
+        case ("T", "GED")
+            write(dist_nu_value, '(F8.3)') shape
+        case default
+            dist_nu_value = "-"
+        end select
+    end function dist_nu_value
+
+    character(len=8) function dist_xi_value(dist_name, shape2)
+        character(len=*), intent(in) :: dist_name
+        real(dp), intent(in) :: shape2
+
+        select case (trim(dist_name))
+        case ("FS_SKEWT")
+            write(dist_xi_value, '(F8.3)') shape2
+        case default
+            dist_xi_value = "-"
+        end select
+    end function dist_xi_value
+
+    character(len=10) function dist_alpha_value(dist_name, shape)
+        character(len=*), intent(in) :: dist_name
+        real(dp), intent(in) :: shape
+
+        select case (trim(dist_name))
+        case ("NIG")
+            write(dist_alpha_value, '(F10.3)') shape
+        case default
+            dist_alpha_value = "-"
+        end select
+    end function dist_alpha_value
 
     real(dp) function default_shape(dist_id)
         integer, intent(in) :: dist_id
@@ -577,19 +652,6 @@ contains
         character(len=*), intent(in) :: dist_name
         canonical_dist = adjustl(dist_name)
     end function canonical_dist
-
-    real(dp) function sample_variance(x)
-        real(dp), intent(in) :: x(:)
-        real(dp) :: xmean
-        integer :: n
-        n = size(x)
-        xmean = sum(x) / real(n, dp)
-        if (n > 1) then
-            sample_variance = sum((x - xmean)**2) / real(n - 1, dp)
-        else
-            sample_variance = 0.0_dp
-        end if
-    end function sample_variance
 
     real(dp) function sigmoid(x)
         real(dp), intent(in) :: x

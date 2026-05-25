@@ -5,15 +5,15 @@ program xfit_garch_returns
 ! unconditional vol, log-likelihood, AIC, BIC, and model ranks.
 
 use kind_mod,         only: dp
-use csv_mod,          only: read_price_csv
+use csv_mod,          only: read_price_csv, print_price_sample_info
 use garch_flex_mod,   only: flex_set_data, flex_set_types, flex_np, flex_obj, &
                              proc_garch, proc_nagarch, proc_gjr, proc_egarch, &
                              proc_names, dist_t
-use garch_module,     only: garch_inv_transform,   garch_transform
-use nagarch_module,   only: nagarch_inv_transform, nagarch_transform
-use gjr_module,       only: gjr_inv_transform,     gjr_transform
-use egarch_module,    only: egarch_inv_transform,  egarch_transform
-use bfgs_module,      only: bfgs_minimize
+use garch_mod,     only: garch_inv_transform,   garch_transform
+use nagarch_mod,   only: nagarch_inv_transform, nagarch_transform
+use gjr_mod,       only: gjr_inv_transform,     gjr_transform
+use egarch_mod,    only: egarch_inv_transform,  egarch_transform
+use bfgs_mod,      only: bfgs_minimize
 use stats_mod,        only: mean, sd
 use rank_mod,         only: rank_desc, rank_asc
 implicit none
@@ -64,7 +64,7 @@ nall    = nprices - 1
 nobs    = min(nret, nall)
 allocate(raw_ret(nobs), ret(nobs))
 
-write(*, '(A,I0,A,I0,A)') "Using last ", nobs, " of ", nall, " observations"
+call print_price_sample_info(prices_file, dates, ncols, nobs)
 write(*,*)
 
 call cpu_time(t_start)

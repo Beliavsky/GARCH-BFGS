@@ -10,7 +10,7 @@ program xsv_t_scaling
                            sv_transform, &
                            proc_sv, proc_sv_lev, dist_normal, dist_t, &
                            n_proc, n_dist, model_names
-    use bfgs_module, only: bfgs_minimize
+    use bfgs_mod, only: bfgs_minimize
     implicit none
 
     ! ---- tuneable parameters ----

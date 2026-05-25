@@ -10,9 +10,9 @@
 program xdist
 
 use kind_mod,          only: dp
-use csv_mod,           only: read_price_csv
-use nagarch_module,    only: nagarch_set_data, nagarch_obj, nagarch_transform, nagarch_inv_transform
-use bfgs_module,       only: bfgs_minimize
+use csv_mod,           only: read_price_csv, print_price_sample_info
+use nagarch_mod,    only: nagarch_set_data, nagarch_obj, nagarch_transform, nagarch_inv_transform
+use bfgs_mod,       only: bfgs_minimize
 use stats_mod,         only: mean, sd
 use distributions_mod, only: dist_count, dist_names, dist_npar_std, &
                               fit_dist_std, fit_dist
@@ -51,8 +51,7 @@ i1      = nprices - nobs
 
 allocate(ret_all(nobs,ncols), h_all(nobs,ncols), z_all(ncols,nobs))
 
-write(*, '(A,I0,A,I0,A,I0,A)') &
-    "Using last ", nobs, " of ", nall, " obs,  ", ncols, " assets"
+call print_price_sample_info(prices_file, dates, ncols, nobs)
 write(*, *)
 
 ! ── Stage 1: NAGARCH(1,1)-Normal per asset ───────────────────────────────────

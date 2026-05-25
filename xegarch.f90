@@ -1,4 +1,4 @@
-! Test program for egarch_module.
+! Test program for egarch_mod.
 !
 ! 1. Numerical gradient check: compares analytical gradient from egarch_obj
 !    with central finite differences at the starting point.
@@ -7,9 +7,9 @@
 
 program xegarch
     use kind_mod,      only: dp
-    use egarch_module, only: egarch_simulate, egarch_set_data, egarch_obj, &
+    use egarch_mod, only: egarch_simulate, egarch_set_data, egarch_obj, &
                               egarch_transform, egarch_inv_transform
-    use bfgs_module,   only: bfgs_minimize
+    use bfgs_mod,   only: bfgs_minimize
     implicit none
 
     integer,  parameter :: nobs      = 2000

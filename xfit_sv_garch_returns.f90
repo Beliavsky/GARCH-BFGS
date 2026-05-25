@@ -7,7 +7,7 @@ program xfit_sv_garch_returns
 !          and cannot be compared directly.
 
 use kind_mod,         only: dp
-use csv_mod,          only: read_price_csv
+use csv_mod,          only: read_price_csv, print_price_sample_info
 use sv_mod,           only: sv_set_data, sv_set_types, sv_np, sv_obj, sv_pred_logl, sv_skew_kurt, &
                               sv_sym_inv_transform, sv_lev_inv_transform, &
                               sv_t_inv_transform,   sv_lev_t_inv_transform, &
@@ -19,12 +19,12 @@ use garch_flex_mod,   only: flex_set_data, flex_set_types, flex_np, flex_obj, fl
                               proc_nagarch, proc_anagarch, proc_cnagarch, dist_skew_t, &
                               anagarch_transform, anagarch_inv_transform, &
                               cnagarch_transform, cnagarch_inv_transform
-use fgarch_module,    only: fgarch_set_data, fgarch_set_dist, fgarch_np, fgarch_obj, &
+use fgarch_mod,    only: fgarch_set_data, fgarch_set_dist, fgarch_np, fgarch_obj, &
                               fgarch_transform, fgarch_inv_transform, &
                               fgarch_vol_ann, fgarch_skew_kurt, &
                               fg_dist_normal, fg_dist_t
-use nagarch_module,   only: nagarch_inv_transform, nagarch_transform
-use bfgs_module,      only: bfgs_minimize
+use nagarch_mod,   only: nagarch_inv_transform, nagarch_transform
+use bfgs_mod,      only: bfgs_minimize
 use stats_mod,        only: mean, sd
 use rank_mod,         only: rank_desc, rank_asc
 implicit none
@@ -183,7 +183,7 @@ nall    = nprices - 1
 nobs    = min(nret, nall)
 allocate(raw_ret(nobs), ret(nobs))
 
-write(*, '(A,I0,A,I0,A)') "Using last ", nobs, " of ", nall, " observations"
+call print_price_sample_info(prices_file, dates, ncols, nobs)
 write(*,*)
 
 call cpu_time(t_start)

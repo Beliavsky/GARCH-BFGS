@@ -10,19 +10,26 @@ program xfit_gen_garch_returns
     use garch_types_mod, only: garch_params_t, garch_fit_result_t
     use garch_forecast_mod, only: model_vol_forecast, vol_forecast_stats_t, summarize_vol_forecast, &
                                   print_vol_forecast_table, finalize_return_garch_fit
-    use model_selection_mod, only: print_model_selection_counts
-    use garch_fit_mod,  only: fit_symm_garch, fit_qgarch, fit_figarch, fit_nagarch, fit_gjr, fit_fgarch_twist, fit_aparch, fit_harch, &
-                              fit_riskmetrics2006, &
+    use model_selection_mod, only: print_model_selection_counts, print_model_fit_times
+    use garch_fit_mod,  only: fit_symm_garch, fit_symm_garch_pq, fit_qgarch, fit_figarch, fit_fi_nagarch, &
+                              fit_nagarch, fit_nagarch_pq, fit_gjr, fit_fgarch_twist, fit_aparch, fit_harch, fit_tgarch, &
+                              fit_avgarch, &
+                              fit_csgarch, fit_riskmetrics2006, &
                               fit_midas_hyperbolic, fit_midas_hyperbolic_asym
     implicit none
 
     character(len=*), parameter :: prices_file = "spy_efa_eem_tlt_lqd.csv"
     real(dp), parameter :: trading_days = 252.0_dp
     integer,  parameter :: max_iter = 500
+    integer,  parameter :: max_p = 1
+    integer,  parameter :: max_q = 1
     real(dp), parameter :: gtol = 1.0e-7_dp
     logical,  parameter :: print_vol_forecast_stats = .false.
     character(len=16), parameter :: models(*) = [character(len=16) :: &
-        "SYMM_GARCH", "QGARCH", "FIGARCH", "NAGARCH", "GJR_GARCH", "FGTWIST", "APARCH", "HARCH", "RM2006", "MIDASHYP", "MIDASHYP_ASYM"]
+        "SYMM_GARCH", "SYMM_GARCH_2_1", "SYMM_GARCH_1_2", "SYMM_GARCH_2_2", &
+        "QGARCH", "FIGARCH", "FI_NAGARCH", "NAGARCH", "NAGARCH_2_1", "NAGARCH_1_2", "NAGARCH_2_2", &
+        "GJR_GARCH", "CSGARCH", "FGTWIST", "APARCH", "HARCH", "TGARCH", "AVGARCH", &
+        "RM2006", "MIDASHYP", "MIDASHYP_ASYM"]
     integer, parameter :: n_model = size(models)
 
     integer, allocatable :: dates(:)
@@ -35,9 +42,10 @@ program xfit_gen_garch_returns
     character(len=256) :: aic_symbols(n_model)
     character(len=16), allocatable :: vf_model(:)
     integer :: nprices, ncols, nobs, icol, imod, ifit, jfit, nfit
-    integer :: niter, clock_start, clock_end, clock_rate
+    integer :: niter, clock_start, clock_end, clock_rate, fit_clock_start, fit_clock_end
     real(dp) :: ret_mean, ret_std, fopt
     real(dp) :: vol_ann, skew, ekurt, elapsed_s
+    real(dp) :: fit_seconds(n_model)
     real(dp), allocatable :: vol_forecast(:)
     type(vol_forecast_stats_t), allocatable :: vf_stats(:,:)
     type(garch_params_t) :: params
@@ -46,6 +54,7 @@ program xfit_gen_garch_returns
     character(len=16) :: model
 
     call system_clock(clock_start, clock_rate)
+    print*,"max_iter:", max_iter ! debug
     call nagarch_set_news_impact(.false.)
     aic_wins = 0
     bic_wins = 0
@@ -53,6 +62,7 @@ program xfit_gen_garch_returns
     bic_rank_sum = 0
     rank_count = 0
     param_count = 0
+    fit_seconds = 0.0_dp
     aic_symbols = ""
 
     call read_price_csv(prices_file, dates, col_names, prices)
@@ -82,21 +92,46 @@ program xfit_gen_garch_returns
         do imod = 1, size(models)
             model = uppercase(trim(models(imod)))
             params = garch_params_t()
+            call system_clock(fit_clock_start)
 
             select case (trim(model))
             case ("SYMM_GARCH", "GARCH", "SYMM")
                 call fit_symm_garch(ret, max_iter, gtol, fopt, params, niter, converged)
                 model = "SYMM_GARCH"
+            case ("SYMM_GARCH_2_1")
+                if (max_p < 2 .or. max_q < 1) cycle
+                call fit_symm_garch_pq(ret, 2, 1, max_iter, gtol, fopt, params, niter, converged)
+            case ("SYMM_GARCH_1_2")
+                if (max_p < 1 .or. max_q < 2) cycle
+                call fit_symm_garch_pq(ret, 1, 2, max_iter, gtol, fopt, params, niter, converged)
+            case ("SYMM_GARCH_2_2")
+                if (max_p < 2 .or. max_q < 2) cycle
+                call fit_symm_garch_pq(ret, 2, 2, max_iter, gtol, fopt, params, niter, converged)
             case ("QGARCH", "QUADRATIC_GARCH")
                 call fit_qgarch(ret, max_iter, gtol, fopt, params, niter, converged)
                 model = "QGARCH"
             case ("FIGARCH")
                 call fit_figarch(ret, max_iter, gtol, fopt, params, niter, converged)
+            case ("FI_NAGARCH", "FINAGARCH")
+                call fit_fi_nagarch(ret, max_iter, gtol, fopt, params, niter, converged)
+                model = "FI_NAGARCH"
             case ("NAGARCH")
                 call fit_nagarch(ret, max_iter, gtol, fopt, params, niter, converged)
+            case ("NAGARCH_2_1")
+                if (max_p < 2 .or. max_q < 1) cycle
+                call fit_nagarch_pq(ret, 2, 1, max_iter, gtol, fopt, params, niter, converged)
+            case ("NAGARCH_1_2")
+                if (max_p < 1 .or. max_q < 2) cycle
+                call fit_nagarch_pq(ret, 1, 2, max_iter, gtol, fopt, params, niter, converged)
+            case ("NAGARCH_2_2")
+                if (max_p < 2 .or. max_q < 2) cycle
+                call fit_nagarch_pq(ret, 2, 2, max_iter, gtol, fopt, params, niter, converged)
             case ("GJR_GARCH", "GJR")
                 call fit_gjr(ret, max_iter, gtol, fopt, params, niter, converged)
                 model = "GJR_GARCH"
+            case ("CSGARCH", "COMPONENT_GARCH")
+                call fit_csgarch(ret, max_iter, gtol, fopt, params, niter, converged)
+                model = "CSGARCH"
             case ("FGTWIST", "FGARCH_TWIST")
                 call fit_fgarch_twist(ret, ret_std, max_iter, gtol, fopt, params, &
                                       vol_ann, skew, ekurt, niter, converged)
@@ -105,6 +140,10 @@ program xfit_gen_garch_returns
                 call fit_aparch(ret, max_iter, gtol, fopt, params, niter, converged)
             case ("HARCH")
                 call fit_harch(ret, max_iter, gtol, fopt, params, niter, converged)
+            case ("TGARCH")
+                call fit_tgarch(ret, max_iter, gtol, fopt, params, niter, converged)
+            case ("AVGARCH")
+                call fit_avgarch(ret, max_iter, gtol, fopt, params, niter, converged)
             case ("RM2006", "RISKMETRICS2006")
                 call fit_riskmetrics2006(ret, fopt, params, niter, converged)
                 model = "RM2006"
@@ -118,6 +157,8 @@ program xfit_gen_garch_returns
                 write(*,'(A,A)') "Skipping unknown model: ", trim(models(imod))
                 cycle
             end select
+            call system_clock(fit_clock_end)
+            fit_seconds(imod) = fit_seconds(imod) + real(fit_clock_end - fit_clock_start, dp) / real(clock_rate, dp)
 
             nfit = nfit + 1
             row_model_idx(nfit) = imod
@@ -172,6 +213,7 @@ program xfit_gen_garch_returns
     elapsed_s = real(clock_end - clock_start, dp) / real(clock_rate, dp)
     call print_model_selection_counts(models, param_count, aic_wins, bic_wins, aic_symbols, &
                                       aic_rank_sum, bic_rank_sum, rank_count)
+    call print_model_fit_times(models, param_count, fit_seconds)
     if (print_vol_forecast_stats) call print_vol_forecast_table(col_names, vf_model, vf_stats, vf_have)
     write(*,'(/,A,F10.3,A)') "Elapsed wall time: ", elapsed_s, " seconds"
 

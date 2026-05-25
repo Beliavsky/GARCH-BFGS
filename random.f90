@@ -12,7 +12,7 @@
 !   x = random_t_std(nu, n, m)    ! rank-2
 !
 !   (same pattern for random_ged_std, random_laplace_std, random_logistic_std,
-!    random_sech, random_nig_sym, random_nig)
+!    random_sech, random_nig_sym, random_nig, random_fs_skewt)
 !
 !   g = random_gamma(a)           ! scalar Gamma(a,1), a > 0 — building block
 !   g = random_gamma(a, n)        ! rank-1
@@ -49,6 +49,7 @@ module random_mod
     public :: random_sech
     public :: random_nig_sym
     public :: random_nig
+    public :: random_fs_skewt
     public :: random_vg_sym
     public :: random_vg
 
@@ -104,6 +105,12 @@ module random_mod
         module procedure random_nig_0
         module procedure random_nig_1
         module procedure random_nig_2
+    end interface
+
+    interface random_fs_skewt
+        module procedure random_fs_skewt_0
+        module procedure random_fs_skewt_1
+        module procedure random_fs_skewt_2
     end interface
 
     interface random_vg_sym
@@ -467,6 +474,50 @@ contains
             end do
         end do
     end function random_nig_2
+
+    function random_fs_skewt_0(nu, xi) result(x)
+        real(dp), intent(in) :: nu, xi
+        real(dp) :: x
+        real(dp) :: u, zabs, xip, xim, m1, raw_mean, raw_second, raw_sd, y
+
+        xip = max(xi, 1.0e-8_dp)
+        xim = 1.0_dp / xip
+        call random_number(u)
+        zabs = abs(random_t_std_0(nu))
+        if (u < xip / (xip + xim)) then
+            y = xip * zabs
+        else
+            y = -xim * zabs
+        end if
+        m1 = sqrt(nu - 2.0_dp) * exp(log_gamma(0.5_dp*(nu - 1.0_dp)) - &
+             0.5_dp*log(pi) - log_gamma(0.5_dp*nu))
+        raw_mean = m1 * (xip - xim)
+        raw_second = (xip**3 + xim**3) / (xip + xim)
+        raw_sd = sqrt(max(raw_second - raw_mean**2, 1.0e-12_dp))
+        x = (y - raw_mean) / raw_sd
+    end function random_fs_skewt_0
+
+    function random_fs_skewt_1(nu, xi, n) result(x)
+        real(dp), intent(in) :: nu, xi
+        integer, intent(in) :: n
+        real(dp) :: x(n)
+        integer :: i
+        do i = 1, n
+            x(i) = random_fs_skewt_0(nu, xi)
+        end do
+    end function random_fs_skewt_1
+
+    function random_fs_skewt_2(nu, xi, n, m) result(x)
+        real(dp), intent(in) :: nu, xi
+        integer, intent(in) :: n, m
+        real(dp) :: x(n, m)
+        integer :: i, j
+        do j = 1, m
+            do i = 1, n
+                x(i, j) = random_fs_skewt_0(nu, xi)
+            end do
+        end do
+    end function random_fs_skewt_2
 
     ! ── Symmetric VG ──────────────────────────────────────────────────────────
 

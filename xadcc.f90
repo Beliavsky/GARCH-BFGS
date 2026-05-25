@@ -12,10 +12,10 @@
 program xadcc
 
 use kind_mod,       only: dp
-use csv_mod,        only: read_price_csv
-use nagarch_module, only: nagarch_set_data, nagarch_obj, nagarch_transform, nagarch_inv_transform
+use csv_mod,        only: read_price_csv, print_price_sample_info
+use nagarch_mod, only: nagarch_set_data, nagarch_obj, nagarch_transform, nagarch_inv_transform
 use dcc_mod,        only: dcc_set_resid, adcc_obj, adcc_transform, adcc_inv_transform
-use bfgs_module,    only: bfgs_minimize
+use bfgs_mod,    only: bfgs_minimize
 use stats_mod,      only: mean, sd
 implicit none
 
@@ -66,8 +66,7 @@ allocate(ret_all(nobs,ncols), h_all(nobs,ncols), z_all(ncols,nobs))
 allocate(g_omega(ncols), g_alpha(ncols), g_theta(ncols), g_beta(ncols))
 allocate(g_vol(ncols), g_logl_n(ncols))
 
-write(*, '(A,I0,A,I0,A,I0,A)') &
-    "Using last ", nobs, " of ", nall, " obs,  ", ncols, " assets"
+call print_price_sample_info(prices_file, dates, ncols, nobs)
 write(*, *)
 
 ! ── Stage 1: NAGARCH(1,1) Normal per asset ───────────────────────────────────

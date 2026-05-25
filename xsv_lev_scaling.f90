@@ -7,7 +7,7 @@ program xsv_lev_scaling
     use sv_mod,      only: sv_simulate, sv_set_data, sv_set_types, sv_np, sv_obj, &
                            sv_sym_inv_transform, sv_lev_inv_transform, sv_transform, &
                            proc_sv, proc_sv_lev, dist_normal
-    use bfgs_module, only: bfgs_minimize
+    use bfgs_mod, only: bfgs_minimize
     implicit none
 
     ! ---- tuneable parameters ----

@@ -400,7 +400,7 @@ program xstgarch
 ! STNAGARCH with Normal, Student-t, skewed-t, NM2, TM2 noise distributions.
 
 use kind_mod,      only: dp
-use csv_mod,       only: read_price_csv
+use csv_mod,       only: read_price_csv, print_price_sample_info
 use stgarch_mod,   only: st_set_data, st_set_dist, st_np, st_obj, &
                           st_transform, st_inv_transform, st_skew_kurt, st_unpack_dist, &
                           st_dist_normal, st_dist_t, st_dist_skewt, st_dist_nm2, st_dist_tm2
@@ -408,8 +408,8 @@ use garch_flex_mod, only: flex_set_data, flex_set_types, flex_np, flex_obj, &
                           proc_nagarch, &
                           flex_dist_normal => dist_normal, &
                           flex_dist_t      => dist_t
-use nagarch_module, only: nagarch_transform, nagarch_inv_transform
-use bfgs_module,   only: bfgs_minimize
+use nagarch_mod, only: nagarch_transform, nagarch_inv_transform
+use bfgs_mod,   only: bfgs_minimize
 use stats_mod,     only: mean, sd
 use rank_mod,      only: rank_desc, rank_asc
 implicit none
@@ -512,7 +512,7 @@ nobs    = min(nret, nall)
 i1      = nprices - nobs
 allocate(raw_ret(nobs), ret(nobs))
 
-write(*, '(A,I0,A,I0,A)') "Using last ", nobs, " of ", nall, " observations"
+call print_price_sample_info(prices_file, dates, ncols, nobs)
 write(*, *)
 
 ! Compute starting structural p0_struct (same for all distributions)

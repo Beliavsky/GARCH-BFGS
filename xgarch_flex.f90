@@ -18,11 +18,11 @@ program xgarch_flex
     use garch_flex_mod,  only: flex_set_data, flex_set_types, flex_np, flex_obj, &
                                 proc_garch, proc_egarch, proc_gjr, &
                                 dist_t, dist_ged
-    use garch_t_module,  only: garch_t_simulate, garch_t_set_data, garch_t_obj, &
+    use garch_t_mod,  only: garch_t_simulate, garch_t_set_data, garch_t_obj, &
                                 garch_t_transform, garch_t_inv_transform
-    use gjr_module,      only: gjr_inv_transform
-    use egarch_module,   only: egarch_transform, egarch_inv_transform
-    use bfgs_module,     only: bfgs_minimize
+    use gjr_mod,      only: gjr_inv_transform
+    use egarch_mod,   only: egarch_transform, egarch_inv_transform
+    use bfgs_mod,     only: bfgs_minimize
     implicit none
 
     integer,  parameter :: nobs     = 2000

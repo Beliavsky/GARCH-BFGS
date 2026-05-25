@@ -11,20 +11,20 @@ program xgarch_choose_dist
                                       dist_normal, dist_t, dist_sech, dist_ged, &
                                       dist_laplace, dist_logistic, dist_nig, &
                                       print_results, print_summary, print_selection_matrices
-    use garch_module,          only: garch_simulate, garch_set_data, &
+    use garch_mod,          only: garch_simulate, garch_set_data, &
                                       garch_inv_transform, garch_obj, garch_transform
-    use garch_t_module,        only: garch_t_simulate, garch_t_set_data, &
+    use garch_t_mod,        only: garch_t_simulate, garch_t_set_data, &
                                       garch_t_inv_transform, garch_t_obj, garch_t_transform
-    use garch_sech_module,     only: garch_sech_simulate, garch_sech_set_data, garch_sech_obj
-    use garch_ged_module,      only: garch_ged_simulate, garch_ged_set_data, &
+    use garch_sech_mod,     only: garch_sech_simulate, garch_sech_set_data, garch_sech_obj
+    use garch_ged_mod,      only: garch_ged_simulate, garch_ged_set_data, &
                                       garch_ged_obj, garch_ged_transform, garch_ged_inv_transform
-    use garch_laplace_module,  only: garch_laplace_simulate, garch_laplace_set_data, &
+    use garch_laplace_mod,  only: garch_laplace_simulate, garch_laplace_set_data, &
                                       garch_laplace_obj
-    use garch_logistic_module, only: garch_logistic_simulate, garch_logistic_set_data, &
+    use garch_logistic_mod, only: garch_logistic_simulate, garch_logistic_set_data, &
                                       garch_logistic_obj
-    use garch_nig_module,      only: garch_nig_simulate, garch_nig_set_data, &
+    use garch_nig_mod,      only: garch_nig_simulate, garch_nig_set_data, &
                                       garch_nig_obj, garch_nig_transform, garch_nig_inv_transform
-    use bfgs_module,           only: bfgs_minimize
+    use bfgs_mod,           only: bfgs_minimize
     implicit none
 
     ! ---- which distributions to simulate from (indexed 0:6 matching dist_* constants) ----

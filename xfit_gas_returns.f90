@@ -6,12 +6,12 @@ program xfit_gas_returns
 ! log-likelihood, AIC, BIC, and model ranks per asset.
 
 use kind_mod,    only: dp
-use csv_mod,     only: read_price_csv
+use csv_mod,     only: read_price_csv, print_price_sample_info
 use gas_mod,     only: gas_set_data, gas_set_types, gas_np, gas_obj, &
                         gas_sym_inv_transform, gas_asym_inv_transform, gas_transform, &
                         proc_gas, proc_agas, dist_t, &
                         n_proc, n_dist, proc_names, dist_names, has_shape
-use bfgs_module, only: bfgs_minimize
+use bfgs_mod, only: bfgs_minimize
 use stats_mod,   only: mean, sd
 use rank_mod,    only: rank_desc, rank_asc
 implicit none
@@ -73,8 +73,9 @@ nobs     = min(nret, nall)
 i1_price = nprices - nobs
 allocate(raw_ret(nobs), ret(nobs))
 
-write(*, '(A,I0,A,I0,A,A,/)') "Using last ", nobs, " of ", nall, " observations, ", &
-    merge("log returns   ", "simple returns", log_ret)
+call print_price_sample_info(prices_file, dates, ncols, nobs, &
+    merge("demeaned log returns   ", "demeaned simple returns", log_ret))
+write(*,*)
 
 do icol = 1, ncols
 

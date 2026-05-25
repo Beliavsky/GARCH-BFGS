@@ -6,7 +6,7 @@ program xsv_scaling
     use kind_mod,    only: dp
     use sv_mod,      only: sv_simulate, sv_set_data, sv_set_types, sv_np, sv_obj, &
                            sv_sym_inv_transform, sv_transform, proc_sv, dist_normal
-    use bfgs_module, only: bfgs_minimize
+    use bfgs_mod, only: bfgs_minimize
     implicit none
 
     ! ---- tuneable parameters ----

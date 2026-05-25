@@ -1,7 +1,7 @@
 ! Fit the volatility models common to Python arch and this Fortran code.
 ! Reads daily prices, computes demeaned log returns, and fits ARCH(1),
-! symmetric GARCH(1,1), GJR-GARCH(1,1), EGARCH(1,1), APARCH(1,1), and
-! HARCH(1,5,22), RiskMetrics 2006, and symmetric/asymmetric MIDAS
+! symmetric GARCH(1,1), QGARCH(1,1), FIGARCH(1,d,1), GJR-GARCH(1,1),
+! EGARCH(1,1), APARCH(1,1), HARCH(1,5,22), RiskMetrics 2006, and symmetric/asymmetric MIDAS
 ! Hyperbolic with Normal errors.
 
 program xfit_arch_common
@@ -10,15 +10,15 @@ program xfit_arch_common
     use csv_mod,        only: read_price_csv, print_price_sample_info
     use stats_mod,      only: mean
     use garch_types_mod, only: garch_params_t
-    use garch_fit_mod,  only: fit_symm_garch, fit_gjr_signed, fit_egarch, fit_aparch, fit_harch, &
+    use garch_fit_mod,  only: fit_symm_garch, fit_qgarch, fit_figarch, fit_gjr_signed, fit_egarch, fit_aparch, fit_harch, &
                               fit_riskmetrics2006, &
                               fit_midas_hyperbolic, fit_midas_hyperbolic_asym, &
-                              garch_skew_kurt, gjr_skew_kurt, egarch_skew_kurt, aparch_skew_kurt, harch_skew_kurt, &
-                              riskmetrics2006_skew_kurt, riskmetrics2006_variance, midas_hyperbolic_skew_kurt, &
+                              garch_skew_kurt, qgarch_skew_kurt, figarch_skew_kurt, gjr_skew_kurt, egarch_skew_kurt, aparch_skew_kurt, harch_skew_kurt, &
+                              riskmetrics2006_skew_kurt, riskmetrics2006_variance, figarch_variance, midas_hyperbolic_skew_kurt, &
                               midas_hyperbolic_asym_skew_kurt, &
-                              symm_garch_persist, gjr_persist, egarch_persist, aparch_persist, harch_persist, &
+                              symm_garch_persist, qgarch_persist, figarch_persist, gjr_persist, egarch_persist, aparch_persist, harch_persist, &
                               riskmetrics2006_persist, midas_hyperbolic_persist, midas_hyperbolic_asym_persist, &
-                              aparch_mean_variance
+                              aparch_mean_variance, qgarch_mean_variance
     use bfgs_mod,       only: bfgs_minimize
     implicit none
 
@@ -44,7 +44,8 @@ program xfit_arch_common
     character(len=*), parameter :: prices_file = "spy_efa_eem_tlt_lqd.csv"
     character(len=*), parameter :: csv_file = "arch/fortran_arch_common_results.csv"
     character(len=16), parameter :: models(*) = [character(len=16) :: &
-        "ARCH1", "SYMM_GARCH", "GJR_GARCH", "EGARCH", "APARCH", "HARCH", "RM2006", "MIDASHYP", "MIDASHYP_ASYM"]
+        "ARCH1", "SYMM_GARCH", "QGARCH", "FIGARCH", "GJR_GARCH", "EGARCH", "APARCH", "HARCH", "RM2006", "MIDASHYP", &
+        "MIDASHYP_ASYM"]
     real(dp), parameter :: trading_days = 252.0_dp
     integer,  parameter :: max_iter = 1000
     real(dp), parameter :: gtol = 1.0e-6_dp
@@ -132,6 +133,22 @@ contains
             h_unc = row%params%omega / max(1.0_dp - row%persist, 1.0e-8_dp)
             row%nparam = 3
             call garch_skew_kurt(y, row%params, row%skew, row%ekurt)
+        case ("QGARCH", "QUADRATIC_GARCH")
+            call fit_qgarch(y, max_iter, gtol, fopt, row%params, row%niter, row%converged)
+            row%persist = qgarch_persist(row%params)
+            h_unc = qgarch_mean_variance(row%params)
+            row%nparam = 4
+            call qgarch_skew_kurt(y, row%params, row%skew, row%ekurt)
+            row%model = "QGARCH"
+        case ("FIGARCH")
+            call fit_figarch(y, max_iter, gtol, fopt, row%params, row%niter, row%converged)
+            row%persist = figarch_persist(row%params)
+            allocate(variance(size(y)))
+            call figarch_variance(y, row%params, variance)
+            h_unc = sum(variance) / real(size(y), dp)
+            deallocate(variance)
+            row%nparam = 4
+            call figarch_skew_kurt(y, row%params, row%skew, row%ekurt)
         case ("GJR_GARCH")
             call fit_gjr_signed(y, max_iter, gtol, fopt, row%params, row%niter, row%converged)
             row%persist = gjr_persist(row%params)

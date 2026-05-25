@@ -5,11 +5,11 @@
 
 program xgarch_t
     use kind_mod,       only: dp
-    use garch_module,   only: garch_simulate, garch_set_data, garch_inv_transform, &
+    use garch_mod,   only: garch_simulate, garch_set_data, garch_inv_transform, &
                                garch_obj, garch_transform
-    use garch_t_module, only: garch_t_simulate, garch_t_set_data, &
+    use garch_t_mod, only: garch_t_simulate, garch_t_set_data, &
                                garch_t_inv_transform, garch_t_obj, garch_t_transform
-    use bfgs_module,    only: bfgs_minimize
+    use bfgs_mod,    only: bfgs_minimize
     implicit none
 
     ! ---- tuneable parameters ----

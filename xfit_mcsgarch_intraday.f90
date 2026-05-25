@@ -24,7 +24,9 @@ module fit_mcsgarch_intraday_mod
     logical, parameter :: write_diurnal_curve_csv = .true.
     logical, parameter :: write_forecast_history_csv = .true.
     logical, parameter :: smooth_diurnal_curve = .true.
+    logical, parameter :: print_squared_noise_acf = .true.
     integer, parameter :: diurnal_smooth_half_width = 2
+    integer, parameter :: squared_noise_acf_lags(7) = [1, 2, 3, 6, 12, 39, 78]
     character(len=*), parameter :: diurnal_curve_csv_file = "mcsgarch_diurnal_curve.csv"
     character(len=*), parameter :: forecast_history_csv_file = "mcsgarch_intraday_forecasts.csv"
     character(len=12), parameter :: model_names(*) = [character(len=12) :: &
@@ -99,6 +101,7 @@ contains
         call print_fit_summary(trim(filename), regular_bars%nobs(), returns, daily_var, bin_id, return_dates, &
                                fit, fit_sec, read_sec, elapsed_sec)
         call print_model_comparison(returns, daily_var, bin_id, fit, fit_sec, diurnal_fit, q_fit)
+        if (print_squared_noise_acf) call print_squared_noise_acf_table(returns, daily_var, bin_id, diurnal_fit, q_fit)
         if (print_diurnal_curve) call print_diurnal_variance_curve(bin_id, diurnal_var, &
                                                                     smooth_diurnal_curve, &
                                                                     diurnal_smooth_half_width)
@@ -473,6 +476,91 @@ contains
               row%model, row%dist, row%k, row%loglik, row%aic, row%bic, row%nu, row%xi, row%skew, row%ex_kurt, &
               row%aic_rank, row%bic_rank, row%fit_sec
     end subroutine print_model_comparison_row
+
+    ! Print autocorrelations of squared standardized intraday residuals for baselines and fitted models.
+    subroutine print_squared_noise_acf_table(returns, daily_var, bin_id, diurnal_fit, q_fit)
+        real(dp), intent(in) :: returns(:), daily_var(:), diurnal_fit(:,:), q_fit(:,:)
+        integer, intent(in) :: bin_id(:)
+        real(dp), allocatable :: h(:), unit_scale(:)
+        real(dp) :: sigma2
+        integer :: ifit, imodel, idist, nbins_used, nobs
+
+        nobs = size(returns)
+        allocate(h(nobs), unit_scale(nobs))
+        unit_scale = 1.0_dp
+        print '(A)', ""
+        print '(A)', "Squared standardized intraday noise autocorrelations"
+        print '(A)', "------------------------------------------------------------------------------------------------------------------------"
+        print '(A32,1X,A8,7(1X,A8))', "Model", "Dist", "acf_1", "acf_2", "acf_3", "acf_6", "acf_12", &
+              "acf_39", "acf_78"
+        print '(A)', "------------------------------------------------------------------------------------------------------------------------"
+
+        sigma2 = max(sum(returns**2) / real(nobs, dp), min_daily_var)
+        h = sigma2
+        call print_squared_noise_acf_row("constant intraday volatility", "NORMAL", returns, h)
+
+        call bin_scaled_variance_path(returns, unit_scale, bin_id, h, nbins_used)
+        call print_squared_noise_acf_row("diurnal multiplier only", "NORMAL", returns, h)
+
+        call bin_scaled_variance_path(returns, daily_var, bin_id, h, nbins_used)
+        call print_squared_noise_acf_row("daily volatility x diurnal", "NORMAL", returns, h)
+
+        ifit = 0
+        do idist = 1, size(dist_names)
+            do imodel = 1, size(model_names)
+                ifit = ifit + 1
+                h = max(daily_var * diurnal_fit(:, ifit) * q_fit(:, ifit), min_daily_var)
+                call print_squared_noise_acf_row(model_table_label(trim(model_names(imodel))), trim(dist_names(idist)), &
+                                                 returns, h)
+            end do
+        end do
+        print '(A)', "------------------------------------------------------------------------------------------------------------------------"
+        deallocate(h, unit_scale)
+    end subroutine print_squared_noise_acf_table
+
+    ! Print one squared standardized residual autocorrelation row.
+    subroutine print_squared_noise_acf_row(model_name, dist_name, returns, h)
+        character(len=*), intent(in) :: model_name, dist_name
+        real(dp), intent(in) :: returns(:), h(:)
+        real(dp) :: acf(size(squared_noise_acf_lags))
+
+        call squared_standardized_residual_acf(returns, h, squared_noise_acf_lags, acf)
+        print '(A32,1X,A8,7(1X,F8.4))', model_name, dist_name, acf
+    end subroutine print_squared_noise_acf_row
+
+    ! Compute autocorrelations of squared standardized residuals at requested lags.
+    subroutine squared_standardized_residual_acf(returns, h, lags, acf)
+        real(dp), intent(in) :: returns(:), h(:)
+        integer, intent(in) :: lags(:)
+        real(dp), intent(out) :: acf(:)
+        real(dp), allocatable :: x(:)
+        real(dp) :: xbar, denom, numer
+        integer :: i, ilag, lag, n
+
+        if (size(returns) /= size(h)) error stop "squared_standardized_residual_acf: array sizes differ"
+        if (size(lags) /= size(acf)) error stop "squared_standardized_residual_acf: lag/acf sizes differ"
+        n = size(returns)
+        allocate(x(n))
+        do i = 1, n
+            x(i) = returns(i)**2 / max(h(i), min_daily_var)
+        end do
+        xbar = sum(x) / real(n, dp)
+        denom = sum((x - xbar)**2)
+
+        do ilag = 1, size(lags)
+            lag = lags(ilag)
+            if (lag < 1 .or. lag >= n .or. denom <= min_daily_var) then
+                acf(ilag) = 0.0_dp
+            else
+                numer = 0.0_dp
+                do i = lag + 1, n
+                    numer = numer + (x(i) - xbar) * (x(i - lag) - xbar)
+                end do
+                acf(ilag) = numer / denom
+            end if
+        end do
+        deallocate(x)
+    end subroutine squared_standardized_residual_acf
 
     ! Estimate a per-bin variance multiplier around a supplied variance scale.
     subroutine bin_scaled_variance_path(returns, scale, bin_id, h, nbins_used)

@@ -5,15 +5,15 @@ program xfit_spy
 ! AIC, BIC, and model ranks for each criterion.
 
 use kind_mod,         only: dp
-use csv_mod,          only: read_price_csv
+use csv_mod,          only: read_price_csv, print_price_sample_info
 use garch_flex_mod,   only: flex_set_data, flex_set_types, flex_np, flex_obj, &
                              proc_garch, proc_nagarch, proc_gjr, proc_egarch, &
                              proc_names, dist_t
-use garch_module,     only: garch_inv_transform,   garch_transform
-use nagarch_module,   only: nagarch_inv_transform, nagarch_transform
-use gjr_module,       only: gjr_inv_transform,     gjr_transform
-use egarch_module,    only: egarch_inv_transform,  egarch_transform
-use bfgs_module,      only: bfgs_minimize
+use garch_mod,     only: garch_inv_transform,   garch_transform
+use nagarch_mod,   only: nagarch_inv_transform, nagarch_transform
+use gjr_mod,       only: gjr_inv_transform,     gjr_transform
+use egarch_mod,    only: egarch_inv_transform,  egarch_transform
+use bfgs_mod,      only: bfgs_minimize
 use rank_mod,         only: rank_desc, rank_asc
 implicit none
 
@@ -27,6 +27,7 @@ real(dp), parameter :: p_t0 = -2.729_dp
 integer, parameter  :: max_iter = 5000
 real(dp), parameter :: gtol = 1.0e-7_dp
 integer, parameter  :: nret = 10**6          ! use only the most recent nret returns
+character(len=*), parameter :: prices_file = "vix_spy.csv"
 
 ! ── data ─────────────────────────────────────────────────────────────────────
 integer,           allocatable :: dates(:)
@@ -55,7 +56,7 @@ real(dp) :: h_unc, vol_ann, logL, aic, bic
 integer          :: rank_logL(nmod), rank_aic(nmod), rank_bic(nmod)
 
 ! ── read and prepare data ─────────────────────────────────────────────────────
-call read_price_csv("vix_spy.csv", dates, col_names, prices)
+call read_price_csv(prices_file, dates, col_names, prices)
 nprices = size(prices, 1)
 nall    = nprices - 1                    ! total log-returns available
 nobs    = min(nret, nall)                ! use only the last nobs returns
@@ -66,7 +67,7 @@ spy_mean = sum(spy) / nobs
 spy_std  = sqrt(sum((spy - spy_mean)**2) / (nobs-1))
 spy      = spy - spy_mean                                         ! demean
 
-write(*, '(A,I0,A,I0,A)') "SPY log-returns: using last ", nobs, " of ", nall, " observations"
+call print_price_sample_info(prices_file, dates, 1, nobs)
 write(*, '(A,F8.4,A)')    "Daily mean (bps): ", spy_mean * 1.0e4_dp
 write(*, '(A,F8.4,A)')    "Daily std dev (%): ", spy_std * 100.0_dp, "%"
 write(*, *)

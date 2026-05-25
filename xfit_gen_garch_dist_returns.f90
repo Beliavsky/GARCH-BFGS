@@ -14,7 +14,7 @@ program xfit_gen_garch_dist_returns
 
     character(len=*), parameter :: default_prices_file = "spy_efa_eem_tlt_lqd.csv"
     real(dp), parameter :: trading_days = 252.0_dp
-    integer, parameter :: max_iter = 100
+    integer, parameter :: max_assets = 3, max_iter = 100
     real(dp), parameter :: gtol = 1.0e-7_dp
     character(len=16), parameter :: models(*) = [character(len=16) :: &
         "SYMM_GARCH", "NAGARCH"] ! , "GJR_GARCH", "GJR_SIGNED", "EGARCH", "QGARCH"]
@@ -55,8 +55,8 @@ program xfit_gen_garch_dist_returns
     bic_rank_sum = 0
     rank_count = 0
     fit_seconds = 0.0_dp
-
-    call read_price_csv(trim(prices_file), dates, col_names, prices)
+    print*,"max_assets =",max_assets
+    call read_price_csv(trim(prices_file), dates, col_names, prices, max_col=max_assets)
     nprices = size(prices, 1)
     ncols = size(prices, 2)
     nobs = nprices - 1

@@ -1,4 +1,4 @@
-! Test program for gjr_module.
+! Test program for gjr_mod.
 !
 ! 1. Numerical gradient check: compares analytical gradient from gjr_obj
 !    with central finite differences at the starting point.
@@ -7,9 +7,9 @@
 
 program xgjr
     use kind_mod,    only: dp
-    use gjr_module,  only: gjr_simulate, gjr_set_data, gjr_obj, &
+    use gjr_mod,  only: gjr_simulate, gjr_set_data, gjr_obj, &
                             gjr_transform, gjr_inv_transform
-    use bfgs_module, only: bfgs_minimize
+    use bfgs_mod, only: bfgs_minimize
     implicit none
 
     integer,  parameter :: nobs      = 2000

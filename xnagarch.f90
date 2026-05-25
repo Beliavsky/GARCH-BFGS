@@ -1,4 +1,4 @@
-! Test program for nagarch_module.
+! Test program for nagarch_mod.
 !
 ! 1. Numerical gradient check: compares analytical gradient from nagarch_obj
 !    with central finite differences at the starting point.
@@ -7,9 +7,9 @@
 
 program xnagarch
     use kind_mod,       only: dp
-    use nagarch_module, only: nagarch_simulate, nagarch_set_data, nagarch_obj, &
+    use nagarch_mod, only: nagarch_simulate, nagarch_set_data, nagarch_obj, &
                                nagarch_transform, nagarch_inv_transform
-    use bfgs_module,    only: bfgs_minimize
+    use bfgs_mod,    only: bfgs_minimize
     implicit none
 
     integer,  parameter :: nobs      = 2000

@@ -10,23 +10,23 @@ program xgarch_gas
 !   (currently restricted to Normal and t, which gas_mod supports).
 
 use kind_mod,       only: dp
-use csv_mod,        only: read_price_csv
+use csv_mod,        only: read_price_csv, print_price_sample_info
 ! dist_sech, dist_ged, dist_laplace, dist_logistic, dist_nig are also available
 ! from garch_flex_mod — add them here and to sel_dists to fit more distributions
 use garch_flex_mod, only: flex_set_data, flex_set_types, flex_np, flex_obj, &
                            proc_garch, proc_nagarch, proc_gjr, proc_egarch, &
                            garch_proc_names => proc_names, &
                            dist_normal, dist_t, dist_ged, dist_nig
-use garch_module,   only: garch_inv_transform,   garch_transform
-use nagarch_module, only: nagarch_inv_transform, nagarch_transform
-use gjr_module,     only: gjr_inv_transform,     gjr_transform
-use egarch_module,  only: egarch_inv_transform,  egarch_transform
+use garch_mod,   only: garch_inv_transform,   garch_transform
+use nagarch_mod, only: nagarch_inv_transform, nagarch_transform
+use gjr_mod,     only: gjr_inv_transform,     gjr_transform
+use egarch_mod,  only: egarch_inv_transform,  egarch_transform
 use gas_mod,        only: gas_set_data, gas_set_types, gas_np, gas_obj, &
                            gas_sym_inv_transform, gas_asym_inv_transform, gas_transform, &
                            proc_gas, proc_agas, &
                            gas_proc_names => proc_names, &
                            n_gas_proc => n_proc
-use bfgs_module,    only: bfgs_minimize
+use bfgs_mod,    only: bfgs_minimize
 use stats_mod,      only: mean, sd
 use rank_mod,       only: rank_desc, rank_asc
 implicit none
@@ -107,8 +107,9 @@ nobs     = min(nret, nall)
 i1_price = nprices - nobs
 allocate(raw_ret(nobs), ret(nobs))
 
-write(*, '(A,I0,A,I0,A,A,/)') "Using last ", nobs, " of ", nall, " observations, ", &
-    merge("log returns   ", "simple returns", log_ret)
+call print_price_sample_info(prices_file, dates, ncols, nobs, &
+    merge("demeaned log returns   ", "demeaned simple returns", log_ret))
+write(*,*)
 
 do icol = 1, ncols
 

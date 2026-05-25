@@ -15,7 +15,7 @@
 module nm2_nagarch_mod
     use kind_mod,       only: dp
     use math_const_mod, only: log_sqrt_2pi
-    use nagarch_module, only: nagarch_transform
+    use nagarch_mod, only: nagarch_transform
     implicit none
     private
     public :: nm2_set_data, nm2_obj, nm2_skew_kurt, nm2_nparams, nm2_unpack_dist
@@ -197,12 +197,12 @@ program xnagarch_mix
 ! Fit NAGARCH with Normal, Student-t, skewed-t, and 2-component normal mixture.
 
 use kind_mod,         only: dp
-use csv_mod,          only: read_price_csv
+use csv_mod,          only: read_price_csv, print_price_sample_info
 use garch_flex_mod,   only: flex_set_data, flex_set_types, flex_np, flex_obj, flex_skew_kurt, &
                               proc_nagarch, dist_normal, dist_t, dist_skew_t
-use nagarch_module,   only: nagarch_transform, nagarch_inv_transform
+use nagarch_mod,   only: nagarch_transform, nagarch_inv_transform
 use nm2_nagarch_mod,  only: nm2_set_data, nm2_obj, nm2_skew_kurt, nm2_nparams, nm2_unpack_dist
-use bfgs_module,      only: bfgs_minimize
+use bfgs_mod,      only: bfgs_minimize
 use stats_mod,        only: mean, sd
 use rank_mod,         only: rank_desc, rank_asc
 implicit none
@@ -274,7 +274,7 @@ nobs    = min(nret, nall)
 i1      = nprices - nobs
 allocate(raw_ret(nobs), ret(nobs))
 
-write(*, '(A,I0,A,I0,A)') "Using last ", nobs, " of ", nall, " observations"
+call print_price_sample_info(prices_file, dates, ncols, nobs)
 write(*, *)
 
 do icol = 1, ncols

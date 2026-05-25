@@ -7,7 +7,7 @@ program xgas_scaling
     use gas_mod,     only: gas_simulate, gas_set_data, gas_set_types, gas_np, gas_obj, &
                            gas_sym_inv_transform, gas_transform, &
                            proc_gas, dist_normal
-    use bfgs_module, only: bfgs_minimize
+    use bfgs_mod, only: bfgs_minimize
     implicit none
 
     ! ---- tuneable parameters ----

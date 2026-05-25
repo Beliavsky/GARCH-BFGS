@@ -12,10 +12,10 @@
 program xdcc
 
 use kind_mod,      only: dp
-use csv_mod,       only: read_price_csv
-use garch_module,  only: garch_set_data, garch_obj, garch_transform, garch_inv_transform
+use csv_mod,       only: read_price_csv, print_price_sample_info
+use garch_mod,  only: garch_set_data, garch_obj, garch_transform, garch_inv_transform
 use dcc_mod,       only: dcc_set_resid, dcc_obj, dcc_transform, dcc_inv_transform
-use bfgs_module,   only: bfgs_minimize
+use bfgs_mod,   only: bfgs_minimize
 use stats_mod,     only: mean, sd
 implicit none
 
@@ -64,8 +64,7 @@ i1      = nprices - nobs
 allocate(ret_all(nobs,ncols), h_all(nobs,ncols), z_all(ncols,nobs))
 allocate(g_omega(ncols), g_alpha(ncols), g_beta(ncols), g_vol(ncols), g_logl_n(ncols))
 
-write(*, '(A,I0,A,I0,A,I0,A)') &
-    "Using last ", nobs, " of ", nall, " obs,  ", ncols, " assets"
+call print_price_sample_info(prices_file, dates, ncols, nobs)
 write(*, *)
 
 ! ── Stage 1: GARCH(1,1) Normal per asset ─────────────────────────────────────

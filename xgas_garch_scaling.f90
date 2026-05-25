@@ -8,8 +8,8 @@ program xgas_garch_scaling
                               gas_sym_inv_transform, gas_transform, &
                               proc_gas, dist_normal
     use garch_flex_mod, only: flex_set_data, flex_set_types, flex_np, flex_obj, proc_garch
-    use garch_module,   only: garch_inv_transform, garch_transform
-    use bfgs_module,    only: bfgs_minimize
+    use garch_mod,   only: garch_inv_transform, garch_transform
+    use bfgs_mod,    only: bfgs_minimize
     implicit none
 
     ! ---- tuneable parameters ----
