@@ -1,0 +1,102 @@
+› comment on these results:
+
+  c:\fortran\public_domain\github\GARCH-BFGS>make run_fgarch
+  (main program xfgarch.f90)
+  ./xfgarch.exe
+  Using 4829 demeaned log returns for 5 assets
+  Mode: NAGARCH-twist FGARCH-Normal; c=0 nests NAGARCH
+  Asset          omega   alpha    beta   theta   twist  vol_ann%        logL         AIC         BIC  iter conv    skew   ekurt
+  ----------------------------------------------------------------------------------------------------------------------------------
+        SPY   2.532E-06  0.3343  0.6898  1.6622 -0.5172     19.17    16096.19   -32182.38   -32149.97    49 T  -0.620   1.780
+        EFA   2.282E-06  0.1009  0.8491  0.7489 -0.0613     21.71    15235.86   -30461.72   -30429.31    37 T  -0.535   1.971
+        EEM   4.933E-06  0.0893  0.8610  0.7116 -0.0648     28.00    13813.44   -27616.88   -27584.47    36 T  -0.389   1.587
+        TLT   6.866E-07  0.0557  0.9381  0.2115 -0.1914     14.04    16453.92   -32897.83   -32865.42    38 T  -0.110   0.809
+        LQD   4.901E-07  0.1058  0.8601  0.2016  0.0846      8.17    20084.42   -40158.83   -40126.42    34 T  -0.647   5.221
+
+  Elapsed wall time:      0.141 seconds
+
+  c:\fortran\public_domain\github\GARCH-BFGS>make run_fit_nagarch_returns
+  ./xfit_nagarch_returns.exe
+  (main program xfit_nagarch_returns.f90)
+  Using 4829 demeaned log returns for 5 assets
+  Asset          omega    alpha     beta    theta  persist  vol_ann%        logL         AIC         BIC  iter conv    skew   ekurt
+  --------------------------------------------------------------------------------------------------------------------------------
+         SPY   2.832E-06   0.1136   0.7480   1.0553   0.9881  24.5001    16078.89   -32149.78   -32123.85    31 T  -0.680   2.216
+         EFA   2.278E-06   0.0937   0.8535   0.6794   0.9905  24.6423    15235.62   -30463.25   -30437.32    30 T  -0.538   2.003
+         EEM   4.918E-06   0.0827   0.8656   0.6322   0.9813  25.7635    13813.26   -27618.52   -27592.59    28 T  -0.390   1.597
+         TLT   6.713E-07   0.0543   0.9357  -0.1332   0.9910  13.7182    16452.24   -32896.49   -32870.56    33 T  -0.113   0.837
+         LQD   4.850E-07   0.1101   0.8563   0.3259   0.9781   7.4692    20083.77   -40159.55   -40133.62    29 T  -0.651   5.334
+
+  Elapsed wall time:      0.156 seconds
+
+  c:\fortran\public_domain\github\GARCH-BFGS>
+  ./xfit_gjr_returns.exe
+  (main program xfit_gjr_returns.f90)
+  Using 4829 demeaned log returns for 5 assets
+  Asset          omega    alpha    gamma     beta  persist  vol_ann%        logL         AIC         BIC  iter conv    skew   ekurt
+  --------------------------------------------------------------------------------------------------------------------------------
+         SPY   2.875E-06   0.0145   0.2023   0.8551   0.9707  15.7289    16013.99   -32019.98   -31994.05    33 T  -0.713   2.586
+         EFA   2.278E-06   0.0359   0.1232   0.8872   0.9847  19.3548    15214.32   -30420.63   -30394.70    29 T  -0.533   1.980
+         EEM   4.706E-06   0.0278   0.1067   0.8967   0.9779  23.1663    13803.99   -27599.99   -27574.06    30 T  -0.396   1.617
+         TLT   7.100E-07   0.0557   0.0000   0.9348   0.9905  13.7544    16450.47   -32892.93   -32867.00    51 T  -0.103   0.815
+         LQD   4.938E-07   0.0688   0.0814   0.8653   0.9748   7.0313    20083.11   -40158.22   -40132.29    30 T  -0.654   5.228
+
+  Elapsed wall time:      0.156 seconds
+
+
+• The ranking is pretty clear: GJR is not competitive here; NAGARCH is strong; the twist extension helps mainly for SPY.
+
+  Log-likelihood by model:
+
+  Asset   FGTWIST   NAGARCH   GJR
+  SPY     16096.19  16078.89  16013.99
+  EFA     15235.86  15235.62  15214.32
+  EEM     13813.44  13813.26  13803.99
+  TLT     16453.92  16452.24  16450.47
+  LQD     20084.42  20083.77  20083.11
+
+  FGTWIST wins every raw likelihood, as expected because it nests NAGARCH with one extra parameter. But the size of the gain matters:
+
+  Asset   FGTWIST - NAGARCH
+  SPY       +17.30
+  EFA        +0.24
+  EEM        +0.18
+  TLT        +1.68
+  LQD        +0.65
+
+  So SPY is the only strong case for the twist parameter. TLT is modest. For EFA, EEM, and LQD, the twist parameter is essentially
+  not buying much.
+
+  By AIC/BIC:
+
+  Asset   AIC winner   BIC winner
+  SPY     FGTWIST      FGTWIST
+  EFA     NAGARCH      NAGARCH
+  EEM     NAGARCH      NAGARCH
+  TLT     FGTWIST      NAGARCH
+  LQD     NAGARCH      NAGARCH
+
+  GJR loses to NAGARCH on all five assets by likelihood, AIC, and BIC. For equities, its leverage parameter gamma is positive as
+  expected, but it still cannot match NAGARCH’s shifted-news curve. For TLT, gamma = 0, so GJR collapses to symmetric GARCH, which
+  also makes sense: bond returns do not show the same equity-style leverage effect.
+
+  Residual diagnostics improve a little under FGTWIST for SPY:
+
+  SPY residuals
+  Model     skew    ekurt
+  FGTWIST  -0.620   1.780
+  NAGARCH  -0.680   2.216
+  GJR      -0.713   2.586
+
+  That is meaningful: the twist model leaves less residual skewness and less excess kurtosis for SPY. But residuals are still non-
+  normal, so a normal innovation assumption remains incomplete.
+
+  The volatility levels differ materially. GJR gives much lower SPY annual vol, 15.73%, versus 24.50% for NAGARCH and 19.17% for
+  FGTWIST. Given its much worse likelihood and fatter residuals, I would not trust the GJR SPY volatility estimate as much here.
+
+  My read:
+
+  - Use NAGARCH as the robust default.
+  - Use FGTWIST for SPY if out-of-sample tests confirm the in-sample gain.
+  - Do not use GJR as the main model for this dataset unless you specifically need the simpler leverage interpretation. It is
+    empirically dominated here.
