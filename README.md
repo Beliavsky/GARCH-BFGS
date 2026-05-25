@@ -65,6 +65,8 @@ Common expected inputs:
 - Daily OHLC price CSVs for split close-open/open-close or range models.
 - Intraday OHLCV CSVs, such as 1-second or 5-minute bars with timestamp, open, high, low, close, and volume.
 
+The example files `prices_ohlc.csv`, `spy_efa_eem_tlt_lqd.csv`, and `vix_spy.csv` were obtained from Yahoo Finance. Intraday files referenced in source-code defaults, such as `c:\python\databento\spy_1s_databento.csv` and `c:\python\intraday_prices\spy_5min_databento.csv`, are Databento data files and are not included. Databento currently offers free signup credits for historical market data.
+
 Large market data files are not necessarily included in this repository.
 
 ## Main Modules
