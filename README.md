@@ -172,6 +172,3 @@ The same program compares:
 - Several programs have default file paths from the local research environment. Treat these as examples and adjust them for your data layout.
 - AIC and BIC comparisons are only directly meaningful when models are fit to the same observations and likelihood target.
 
-## License
-
-No explicit license file is currently included. Add a `LICENSE` file before publishing if you want to specify reuse terms.
