@@ -1,13 +1,13 @@
-! Fit all 7 standardised distributions to iid data from a CSV file.
+! Fit supported standardised distributions to iid returns from a price CSV file.
 !
 ! Stage 1: fit NAGARCH(1,1)-Normal per asset to extract standardised residuals z_t.
-! Stage 2: fit all 7 distributions to each asset's z_t via fit_dist_std,
+! Stage 2: fit supported distributions to each asset's z_t via fit_dist_std,
 !          then to the raw returns via fit_dist.
 !
-! Output table: for each asset x distribution: logL/n, shape, AIC.
-!               AIC = 2*npar - 2*logL  where npar = dist_npar_std (0 or 1).
+! Output table: for each asset x distribution: logL/n and shape parameters.
 
-program xdist
+program xfit_dist_returns
+    use date_mod, only: print_program_header
 
 use kind_mod,          only: dp
 use csv_mod,           only: read_price_csv, print_price_sample_info
@@ -40,6 +40,7 @@ integer  :: niter, t
 logical  :: converged, conv_d
 real(dp) :: t_start, t_end
 
+    call print_program_header("xfit_dist_returns.f90")
 call cpu_time(t_start)
 
 call read_price_csv(prices_file, dates, col_names, prices)
@@ -54,7 +55,7 @@ allocate(ret_all(nobs,ncols), h_all(nobs,ncols), z_all(ncols,nobs))
 call print_price_sample_info(prices_file, dates, ncols, nobs)
 write(*, *)
 
-! ── Stage 1: NAGARCH(1,1)-Normal per asset ───────────────────────────────────
+! ?????? Stage 1: NAGARCH(1,1)-Normal per asset ?????????????????????????????????????????????????????????????????????????????????????????????????????????
 
 allocate(p(4), p0(4))
 do icol = 1, ncols
@@ -77,7 +78,7 @@ do icol = 1, ncols
 end do
 deallocate(p, p0)
 
-! ── Stage 2: fit distributions to standardised residuals z_t ─────────────────
+! ?????? Stage 2: fit distributions to standardised residuals z_t ???????????????????????????????????????????????????
 
 write(*, '(A)') "Distribution fit to NAGARCH(1,1) standardised residuals z_t:"
 write(*, '(A)') "logL/n and shape parameter for each asset x distribution"
@@ -108,7 +109,7 @@ write(*, *)
 write(*, '(A)') "shape: nu (t, ged), alp (nig); -- = no shape parameter"
 write(*, '(A)') "npar_std: normal/logistic/laplace/sech=0, t/ged/nig=1"
 
-! ── Also: fit distributions to raw demeaned returns (full location-scale) ────
+! ?????? Also: fit distributions to raw demeaned returns (full location-scale) ????????????
 
 write(*, *)
 write(*, '(A)') "Distribution fit to raw demeaned returns (mu=sample mean, sigma+shape fitted):"
@@ -144,4 +145,4 @@ write(*, '(A)') "shape: nu (t, ged), alp (nig); -- = no shape parameter"
 call cpu_time(t_end)
 write(*, '(/,A,F0.3,A)') "elapsed time: ", t_end - t_start, " s"
 
-end program xdist
+end program xfit_dist_returns
