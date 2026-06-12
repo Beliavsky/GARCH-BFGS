@@ -12,20 +12,34 @@ module compare_daily_realized_vol_forecasts_mod
                                               select_realized_measure
     use implied_vol_utils_mod, only: adjust_implied_vol_weekday_levels
     use garch_types_mod, only: garch_params_t
-    use garch_fit_mod, only: fit_symm_garch, fit_nagarch, symm_garch_persist, nagarch_persist
-    use garch_forecast_mod, only: symm_garch_variance_path, nagarch_variance_path, riskmetrics_ewma_variance_path
-    use realized_vol_forecast_mod, only: ewma_affine_result_t, har_variance_result_t, log_har_variance_result_t, &
-                                         harq_variance_result_t, harj_variance_result_t, harqj_variance_result_t, &
-                                         har_negret_variance_result_t, &
+    use garch_fit_mod, only: fit_ewma, fit_symm_garch, fit_qgarch, fit_csgarch, fit_nagarch, fit_gjr, &
+                             fit_gjr_signed, fit_egarch, fit_fgarch_twist, fit_aparch, fit_harch, fit_tgarch, &
+                             fit_avgarch, fit_riskmetrics2006, fit_midas_hyperbolic, fit_midas_hyperbolic_asym
+    use garch_fit_mod, only: ewma_persist, symm_garch_persist, qgarch_persist, csgarch_persist, &
+                             nagarch_persist, gjr_persist, egarch_persist, fgarch_twist_persist, &
+                             aparch_persist, harch_persist, tgarch_persist, avgarch_persist, &
+                             riskmetrics2006_persist, midas_hyperbolic_persist, midas_hyperbolic_asym_persist
+    use garch_forecast_mod, only: symm_garch_variance_path, nagarch_variance_path, gjr_variance_path, &
+                                  egarch_variance_path, model_vol_forecast
+    use realized_vol_forecast_mod, only: ewma_affine_result_t, affine_variance_result_t, affine2_variance_result_t, &
+                                         har_variance_result_t, harx_variance_result_t, harx_lev_variance_result_t, &
+                                         log_har_variance_result_t, &
+                                         sqrt_har_variance_result_t, harq_variance_result_t, harj_variance_result_t, &
+                                         harqj_variance_result_t, har_negret_variance_result_t, &
+                                         har_lev_variance_result_t, &
                                          semivar_har_variance_result_t, &
                                          midas_variance_result_t, heavy_variance_result_t, &
-                                         fit_ewma_affine_variance, fit_har_variance, fit_log_har_variance, &
-                                         fit_harq_variance, fit_harj_variance, fit_harqj_variance, &
-                                         fit_har_negret_variance, fit_semivar_har_variance, &
+                                         fit_ewma_affine_variance, fit_affine_variance, fit_affine2_variance, &
+                                         fit_har_variance, fit_harx_variance, fit_harx_lev_variance, &
+                                         fit_log_har_variance, fit_sqrt_har_variance, fit_harq_variance, fit_harj_variance, &
+                                         fit_harqj_variance, fit_har_negret_variance, fit_har_lev_variance, &
+                                         fit_semivar_har_variance, &
                                          fit_midas_variance, fit_heavy_variance, &
                                          gaussian_variance_loglik, qlike_loss
     use realized_garch_mod, only: realized_garch_result_t, fit_realized_garch
-    use stats_mod, only: mean, correlation, demean_first
+    use stats_mod, only: mean, sd, correlation, demean_first, nonnegative_least_squares
+    use regression_diagnostics_mod, only: active_nnls_tstats, predictor_correlations, rank_nonzero_by_tstat, &
+                                          print_response_predictor_corr_matrix
     use time_series_compare_mod, only: aligned_index_pairs
     use rank_mod, only: rank_desc
     use program_utils_mod, only: read_integer_arg, elapsed_since
@@ -40,9 +54,22 @@ module compare_daily_realized_vol_forecasts_mod
     integer, parameter :: midas_lag_count = 22
     real(dp), parameter :: trading_days_per_year = 252.0_dp
     logical, parameter :: adjust_implied_vol_day_of_week = .true.
+    logical, parameter :: fit_implied_vol_only = .true.
+    logical, parameter :: fit_harx_implied_vol = .true.
+    logical, parameter :: fit_harx_implied_vol_leverage = .true.
+    logical, parameter :: fit_iv_augmented_models = .false.
+    logical, parameter :: fit_implied_vol_nnls = .false.
+    logical, parameter :: print_implied_vol_nnls_corr_matrix = .true.
+    logical, parameter :: implied_vol_nnls_intercept = .true.
+    integer, parameter :: implied_vol_nnls_max_iter = 1000
+    real(dp), parameter :: implied_vol_nnls_tol = 1.0e-10_dp
 
     character(len=16), parameter :: measure_names(*) = [character(len=16) :: &
         "RV", "BPV", "RSV_NEG", "RSV_POS", "PARKINSON", "GARMAN_KLASS"]
+    character(len=16), parameter :: cc_garch_models(*) = [character(len=16) :: &
+        "GARCH", "NAGARCH", "GJR", "EGARCH", "EWMA_FIT", "RM2006", &
+        "QGARCH", "CSGARCH", "GJR_SIGNED", "APARCH", "HARCH", &
+        "TGARCH", "AVGARCH", "FGTWIST", "MIDASHYP", "MIDASHYP_ASYM"]
 
     type :: score_row_t
         character(len=16) :: measure = ""
@@ -61,6 +88,7 @@ module compare_daily_realized_vol_forecasts_mod
         integer :: bic_rank = 0
         logical :: converged = .false.
         real(dp), allocatable :: h_test(:)
+        real(dp), allocatable :: h_all(:)
     end type score_row_t
 
     public :: run_compare_daily_realized_vol_forecasts
@@ -74,13 +102,10 @@ contains
         character(len=32), allocatable :: implied_vol_names(:)
         integer, allocatable :: implied_vol_dates(:)
         real(dp), allocatable :: implied_vol_values(:, :)
-        real(dp), allocatable :: ret_cc(:), h(:), x(:), jump(:)
+        real(dp), allocatable :: ret_cc(:), h(:), x(:), jump(:), implied_var(:)
         type(score_row_t), allocatable :: rows(:)
-        type(garch_params_t) :: garch_params, nag_params
-        integer :: nargs, ntest_days, nobs, train_nobs, test_first, irow, imeas
-        integer :: niter_garch, niter_nag
-        logical :: conv_garch, conv_nag
-        real(dp) :: f_garch, f_nag, t0, t1, read_sec, fit_sec, elapsed_sec
+        integer :: nargs, ntest_days, nobs, train_nobs, test_first, irow, imeas, imodel
+        real(dp) :: t0, t1, read_sec, fit_sec, elapsed_sec
 
         call cpu_time(t0)
         filename = "c:\python\intraday_prices\spy_5min_databento.csv"
@@ -102,25 +127,26 @@ contains
         if (nobs <= ntest_days + 30) error stop "xcompare_daily_realized_vol_forecasts: not enough daily observations"
         train_nobs = nobs - ntest_days
         test_first = train_nobs + 1
-        allocate(ret_cc(nobs), h(nobs), x(nobs), jump(nobs), rows(7 + 11*size(measure_names)))
+        allocate(ret_cc(nobs), h(nobs), x(nobs), jump(nobs), implied_var(nobs), &
+                 rows(2*(size(cc_garch_models) + merge(1, 0, fit_implied_vol_only) + &
+                      (13 + merge(1, 0, fit_harx_implied_vol) + &
+                       merge(1, 0, fit_harx_implied_vol_leverage))*size(measure_names))))
         ret_cc = log(daily%close(2:nobs + 1) / daily%close(1:nobs))
         jump = max(daily%rv(1:nobs) - daily%bpv(1:nobs), 0.0_dp)
+        call build_lagged_implied_variance(daily%date, implied_vol_dates, implied_vol_values(:, 1), &
+                                           adjust_implied_vol_day_of_week, implied_var)
         call demean_first(ret_cc, train_nobs)
 
         call cpu_time(t1)
-        call fit_symm_garch(ret_cc(1:train_nobs), max_iter, gtol, f_garch, garch_params, niter_garch, conv_garch)
-        call fit_nagarch(ret_cc(1:train_nobs), max_iter, gtol, f_nag, nag_params, niter_nag, conv_nag)
-        call symm_garch_variance_path(ret_cc, garch_params, h)
-        call fill_row(rows(1), "CC", "GARCH", 3, 0.0_dp, 0.0_dp, 0.0_dp, ret_cc(test_first:nobs), &
-                      h(test_first:nobs), niter_garch, conv_garch)
-        call riskmetrics_ewma_variance_path(ret_cc, riskmetrics_lambda, train_nobs, h)
-        call fill_row(rows(2), "CC", "EWMA_0P94", 0, riskmetrics_lambda, 0.0_dp, 0.0_dp, ret_cc(test_first:nobs), &
-                      h(test_first:nobs), 0, .true.)
-        call nagarch_variance_path(ret_cc, nag_params, h)
-        call fill_row(rows(3), "CC", "NAGARCH", 4, 0.0_dp, 0.0_dp, 0.0_dp, ret_cc(test_first:nobs), &
-                      h(test_first:nobs), niter_nag, conv_nag)
-
-        irow = 3
+        irow = 0
+        do imodel = 1, size(cc_garch_models)
+            irow = irow + 1
+            call fit_and_score_cc_garch(rows(irow), trim(cc_garch_models(imodel)), ret_cc, train_nobs, test_first, h)
+        end do
+        if (fit_implied_vol_only) then
+            irow = irow + 1
+            call fit_and_score_iv_only(rows(irow), ret_cc, implied_var, train_nobs, test_first, h)
+        end if
         do imeas = 1, size(measure_names)
             call select_realized_measure(daily, measure_names(imeas), x)
             irow = irow + 1
@@ -131,8 +157,20 @@ contains
                                        train_nobs, test_first, .true., h)
             irow = irow + 1
             call fit_and_score_har(rows(irow), measure_names(imeas), ret_cc, x, train_nobs, test_first, h)
+            if (fit_harx_implied_vol) then
+                irow = irow + 1
+                call fit_and_score_harx_iv(rows(irow), measure_names(imeas), ret_cc, x, implied_var, &
+                                           train_nobs, test_first, h)
+            end if
+            if (fit_harx_implied_vol_leverage) then
+                irow = irow + 1
+                call fit_and_score_harx_iv_lev(rows(irow), measure_names(imeas), ret_cc, x, implied_var, &
+                                               train_nobs, test_first, h)
+            end if
             irow = irow + 1
             call fit_and_score_log_har(rows(irow), measure_names(imeas), ret_cc, x, train_nobs, test_first, h)
+            irow = irow + 1
+            call fit_and_score_sqrt_har(rows(irow), measure_names(imeas), ret_cc, x, train_nobs, test_first, h)
             irow = irow + 1
             call fit_and_score_harq(rows(irow), measure_names(imeas), ret_cc, x, daily%rq(1:nobs), train_nobs, &
                                     test_first, h)
@@ -143,6 +181,8 @@ contains
                                      train_nobs, test_first, h)
             irow = irow + 1
             call fit_and_score_har_negret(rows(irow), measure_names(imeas), ret_cc, x, train_nobs, test_first, h)
+            irow = irow + 1
+            call fit_and_score_har_lev(rows(irow), measure_names(imeas), ret_cc, x, train_nobs, test_first, h)
             irow = irow + 1
             call fit_and_score_midas(rows(irow), measure_names(imeas), ret_cc, x, train_nobs, test_first, h)
             irow = irow + 1
@@ -158,15 +198,166 @@ contains
         call fit_and_score_char(rows(irow), daily, ret_cc, train_nobs, test_first, h)
         irow = irow + 1
         call fit_and_score_charq(rows(irow), daily, ret_cc, train_nobs, test_first, h)
+        if (fit_iv_augmented_models) call append_iv_augmented_rows(rows, irow, ret_cc, implied_var, train_nobs, test_first, h)
         fit_sec = elapsed_since(t1)
         elapsed_sec = elapsed_since(t0)
 
-        call rank_rows(rows)
-        call print_summary(filename, daily, train_nobs, ntest_days, rows, read_sec, fit_sec, elapsed_sec)
-        call print_implied_vol_correlation_table(daily%date(test_first + 1:nobs + 1), rows, implied_vol_dates, &
+        call rank_rows(rows(1:irow))
+        call print_summary(filename, daily, train_nobs, ntest_days, rows(1:irow), read_sec, fit_sec, elapsed_sec)
+        call print_implied_vol_correlation_table(daily%date(test_first + 1:nobs + 1), rows(1:irow), implied_vol_dates, &
                                                  implied_vol_values(:, 1), "VIX", adjust_implied_vol_day_of_week)
-        deallocate(ret_cc, h, x, jump, rows)
+        deallocate(ret_cc, h, x, jump, implied_var, rows)
     end subroutine run_compare_daily_realized_vol_forecasts
+
+    subroutine fit_and_score_cc_garch(row, model, ret_cc, train_nobs, test_first, h)
+        type(score_row_t), intent(out) :: row
+        character(len=*), intent(in) :: model
+        real(dp), intent(in) :: ret_cc(:)
+        integer, intent(in) :: train_nobs, test_first
+        real(dp), intent(out) :: h(:)
+        type(garch_params_t) :: params
+        character(len=16) :: path_model, row_model
+        real(dp) :: fopt, ret_std, persist, vol_ann, skew, ekurt
+        integer :: nobs, niter
+        logical :: converged
+
+        nobs = size(ret_cc)
+        params = garch_params_t()
+        row_model = cc_garch_row_model(model)
+        path_model = cc_garch_path_model(model)
+        select case (trim(row_model))
+        case ("EWMA_FIT")
+            call fit_ewma(ret_cc(1:train_nobs), max_iter, gtol, fopt, params, niter, converged)
+            persist = ewma_persist(params)
+        case ("GARCH")
+            call fit_symm_garch(ret_cc(1:train_nobs), max_iter, gtol, fopt, params, niter, converged)
+            persist = symm_garch_persist(params)
+        case ("QGARCH")
+            call fit_qgarch(ret_cc(1:train_nobs), max_iter, gtol, fopt, params, niter, converged)
+            persist = qgarch_persist(params)
+        case ("CSGARCH")
+            call fit_csgarch(ret_cc(1:train_nobs), max_iter, gtol, fopt, params, niter, converged)
+            persist = csgarch_persist(params)
+        case ("NAGARCH")
+            call fit_nagarch(ret_cc(1:train_nobs), max_iter, gtol, fopt, params, niter, converged)
+            persist = nagarch_persist(params)
+        case ("GJR")
+            call fit_gjr(ret_cc(1:train_nobs), max_iter, gtol, fopt, params, niter, converged)
+            persist = gjr_persist(params)
+        case ("GJR_SIGNED")
+            call fit_gjr_signed(ret_cc(1:train_nobs), max_iter, gtol, fopt, params, niter, converged)
+            persist = gjr_persist(params)
+        case ("EGARCH")
+            call fit_egarch(ret_cc(1:train_nobs), max_iter, gtol, fopt, params, niter, converged)
+            persist = egarch_persist(params)
+        case ("APARCH")
+            call fit_aparch(ret_cc(1:train_nobs), max_iter, gtol, fopt, params, niter, converged)
+            persist = aparch_persist(params)
+        case ("HARCH")
+            call fit_harch(ret_cc(1:train_nobs), max_iter, gtol, fopt, params, niter, converged)
+            persist = harch_persist(params)
+        case ("TGARCH")
+            call fit_tgarch(ret_cc(1:train_nobs), max_iter, gtol, fopt, params, niter, converged)
+            persist = tgarch_persist(params)
+        case ("AVGARCH")
+            call fit_avgarch(ret_cc(1:train_nobs), max_iter, gtol, fopt, params, niter, converged)
+            persist = avgarch_persist(params)
+        case ("FGTWIST")
+            ret_std = sd(ret_cc(1:train_nobs))
+            call fit_fgarch_twist(ret_cc(1:train_nobs), ret_std, max_iter, gtol, fopt, params, vol_ann, skew, ekurt, &
+                                  niter, converged)
+            persist = fgarch_twist_persist(params)
+        case ("RM2006")
+            call fit_riskmetrics2006(ret_cc(1:train_nobs), fopt, params, niter, converged)
+            persist = riskmetrics2006_persist()
+        case ("MIDASHYP")
+            call fit_midas_hyperbolic(ret_cc(1:train_nobs), max_iter, gtol, fopt, params, niter, converged)
+            persist = midas_hyperbolic_persist(params)
+        case ("MIDASHYP_ASYM")
+            call fit_midas_hyperbolic_asym(ret_cc(1:train_nobs), max_iter, gtol, fopt, params, niter, converged)
+            persist = midas_hyperbolic_asym_persist(params)
+        case default
+            error stop "fit_and_score_cc_garch: unsupported model"
+        end select
+
+        call cc_garch_variance_path(path_model, ret_cc, params, persist, h)
+        call fill_row(row, "CC", row_model, cc_garch_param_count(row_model), 0.0_dp, 0.0_dp, 0.0_dp, &
+                      ret_cc(test_first:nobs), h(test_first:nobs), niter, converged)
+        call store_full_path(row, h)
+    end subroutine fit_and_score_cc_garch
+
+    subroutine cc_garch_variance_path(model, ret_cc, params, persist, h)
+        character(len=*), intent(in) :: model
+        real(dp), intent(in) :: ret_cc(:), persist
+        type(garch_params_t), intent(in) :: params
+        real(dp), intent(out) :: h(:)
+        real(dp), allocatable :: vol(:)
+
+        select case (trim(model))
+        case ("SYMM_GARCH")
+            call symm_garch_variance_path(ret_cc, params, h)
+        case ("NAGARCH")
+            call nagarch_variance_path(ret_cc, params, h)
+        case ("GJR_GARCH")
+            call gjr_variance_path(ret_cc, params, h)
+        case ("EGARCH")
+            call egarch_variance_path(ret_cc, params, h)
+        case default
+            allocate(vol(size(ret_cc)))
+            call model_vol_forecast(trim(model), ret_cc, params, persist, trading_days_per_year, vol)
+            h = max((vol / 100.0_dp)**2 / trading_days_per_year, min_var)
+            deallocate(vol)
+        end select
+    end subroutine cc_garch_variance_path
+
+    pure character(len=16) function cc_garch_row_model(model)
+        character(len=*), intent(in) :: model
+
+        select case (trim(model))
+        case ("SYMM_GARCH")
+            cc_garch_row_model = "GARCH"
+        case ("GJR_GARCH")
+            cc_garch_row_model = "GJR"
+        case default
+            cc_garch_row_model = trim(model)
+        end select
+    end function cc_garch_row_model
+
+    pure character(len=16) function cc_garch_path_model(model)
+        character(len=*), intent(in) :: model
+
+        select case (trim(model))
+        case ("GARCH")
+            cc_garch_path_model = "SYMM_GARCH"
+        case ("GJR", "GJR_SIGNED")
+            cc_garch_path_model = "GJR_GARCH"
+        case ("EWMA_FIT")
+            cc_garch_path_model = "EWMA"
+        case default
+            cc_garch_path_model = trim(model)
+        end select
+    end function cc_garch_path_model
+
+    pure integer function cc_garch_param_count(model)
+        character(len=*), intent(in) :: model
+
+        select case (trim(model))
+        case ("EWMA_FIT")
+            cc_garch_param_count = 1
+        case ("GARCH")
+            cc_garch_param_count = 3
+        case ("RM2006")
+            cc_garch_param_count = 0
+        case ("QGARCH", "NAGARCH", "GJR", "GJR_SIGNED", "EGARCH", "HARCH", "TGARCH", "MIDASHYP_ASYM")
+            cc_garch_param_count = 4
+        case ("CSGARCH", "APARCH", "AVGARCH", "FGTWIST")
+            cc_garch_param_count = 5
+        case ("MIDASHYP")
+            cc_garch_param_count = 3
+        case default
+            cc_garch_param_count = 0
+        end select
+    end function cc_garch_param_count
 
     subroutine fit_and_score_measure(row, measure, model, ret_cc, x, train_nobs, test_first, fit_lambda, h)
         type(score_row_t), intent(out) :: row
@@ -183,7 +374,23 @@ contains
         k = merge(3, 2, fit_lambda)
         call fill_row(row, measure, model, k, result%lambda, result%a, result%b, ret_cc(test_first:nobs), &
                       h(test_first:nobs), result%niter, result%converged)
+        call store_full_path(row, h)
     end subroutine fit_and_score_measure
+
+    subroutine fit_and_score_iv_only(row, ret_cc, implied_var, train_nobs, test_first, h)
+        type(score_row_t), intent(out) :: row
+        real(dp), intent(in) :: ret_cc(:), implied_var(:)
+        integer, intent(in) :: train_nobs, test_first
+        real(dp), intent(out) :: h(:)
+        type(affine_variance_result_t) :: result
+        integer :: nobs
+
+        nobs = size(ret_cc)
+        call fit_affine_variance(ret_cc, implied_var, train_nobs, max_iter, gtol, result, h)
+        call fill_row(row, "IV", "IV_ONLY", 2, 0.0_dp, result%a, result%b, ret_cc(test_first:nobs), &
+                      h(test_first:nobs), result%niter, result%converged)
+        call store_full_path(row, h)
+    end subroutine fit_and_score_iv_only
 
     subroutine fit_and_score_har(row, measure, ret_cc, x, train_nobs, test_first, h)
         type(score_row_t), intent(out) :: row
@@ -198,7 +405,40 @@ contains
         call fit_har_variance(ret_cc, x, train_nobs, result, h)
         call fill_row(row, measure, "HAR_RV", 4, 0.0_dp, result%coef(1), 0.0_dp, ret_cc(test_first:nobs), &
                       h(test_first:nobs), result%niter, result%converged)
+        call store_full_path(row, h)
     end subroutine fit_and_score_har
+
+    subroutine fit_and_score_harx_iv(row, measure, ret_cc, x, implied_var, train_nobs, test_first, h)
+        type(score_row_t), intent(out) :: row
+        character(len=*), intent(in) :: measure
+        real(dp), intent(in) :: ret_cc(:), x(:), implied_var(:)
+        integer, intent(in) :: train_nobs, test_first
+        real(dp), intent(out) :: h(:)
+        type(harx_variance_result_t) :: result
+        integer :: nobs
+
+        nobs = size(ret_cc)
+        call fit_harx_variance(ret_cc, x, implied_var, train_nobs, result, h)
+        call fill_row(row, measure, "HARX_IV", 5, 0.0_dp, result%coef(1), result%coef(5), &
+                      ret_cc(test_first:nobs), h(test_first:nobs), result%niter, result%converged)
+        call store_full_path(row, h)
+    end subroutine fit_and_score_harx_iv
+
+    subroutine fit_and_score_harx_iv_lev(row, measure, ret_cc, x, implied_var, train_nobs, test_first, h)
+        type(score_row_t), intent(out) :: row
+        character(len=*), intent(in) :: measure
+        real(dp), intent(in) :: ret_cc(:), x(:), implied_var(:)
+        integer, intent(in) :: train_nobs, test_first
+        real(dp), intent(out) :: h(:)
+        type(harx_lev_variance_result_t) :: result
+        integer :: nobs
+
+        nobs = size(ret_cc)
+        call fit_harx_lev_variance(ret_cc, x, implied_var, train_nobs, result, h)
+        call fill_row(row, measure, "HARX_IV_LEV", 8, 0.0_dp, result%coef(1), result%coef(5), &
+                      ret_cc(test_first:nobs), h(test_first:nobs), result%niter, result%converged)
+        call store_full_path(row, h)
+    end subroutine fit_and_score_harx_iv_lev
 
     subroutine fit_and_score_log_har(row, measure, ret_cc, x, train_nobs, test_first, h)
         type(score_row_t), intent(out) :: row
@@ -213,7 +453,24 @@ contains
         call fit_log_har_variance(ret_cc, x, train_nobs, result, h)
         call fill_row(row, measure, "LOG_HAR", 4, 0.0_dp, result%coef(1), result%coef(2), &
                       ret_cc(test_first:nobs), h(test_first:nobs), result%niter, result%converged)
+        call store_full_path(row, h)
     end subroutine fit_and_score_log_har
+
+    subroutine fit_and_score_sqrt_har(row, measure, ret_cc, x, train_nobs, test_first, h)
+        type(score_row_t), intent(out) :: row
+        character(len=*), intent(in) :: measure
+        real(dp), intent(in) :: ret_cc(:), x(:)
+        integer, intent(in) :: train_nobs, test_first
+        real(dp), intent(out) :: h(:)
+        type(sqrt_har_variance_result_t) :: result
+        integer :: nobs
+
+        nobs = size(ret_cc)
+        call fit_sqrt_har_variance(ret_cc, x, train_nobs, result, h)
+        call fill_row(row, measure, "SQRT_HAR", 4, 0.0_dp, result%coef(1), result%coef(2), &
+                      ret_cc(test_first:nobs), h(test_first:nobs), result%niter, result%converged)
+        call store_full_path(row, h)
+    end subroutine fit_and_score_sqrt_har
 
     subroutine fit_and_score_harq(row, measure, ret_cc, x, rq, train_nobs, test_first, h)
         type(score_row_t), intent(out) :: row
@@ -228,6 +485,7 @@ contains
         call fit_harq_variance(ret_cc, x, rq, train_nobs, result, h)
         call fill_row(row, measure, "HARQ", 5, 0.0_dp, result%coef(1), result%coef(5), ret_cc(test_first:nobs), &
                       h(test_first:nobs), result%niter, result%converged)
+        call store_full_path(row, h)
     end subroutine fit_and_score_harq
 
     subroutine fit_and_score_harj(row, measure, ret_cc, x, jump, train_nobs, test_first, h)
@@ -243,6 +501,7 @@ contains
         call fit_harj_variance(ret_cc, x, jump, train_nobs, result, h)
         call fill_row(row, measure, "HARJ", 7, 0.0_dp, result%coef(1), result%coef(5), ret_cc(test_first:nobs), &
                       h(test_first:nobs), result%niter, result%converged)
+        call store_full_path(row, h)
     end subroutine fit_and_score_harj
 
     subroutine fit_and_score_harqj(row, measure, ret_cc, x, rq, jump, train_nobs, test_first, h)
@@ -258,6 +517,7 @@ contains
         call fit_harqj_variance(ret_cc, x, rq, jump, train_nobs, result, h)
         call fill_row(row, measure, "HARQJ", 8, 0.0_dp, result%coef(1), result%coef(8), ret_cc(test_first:nobs), &
                       h(test_first:nobs), result%niter, result%converged)
+        call store_full_path(row, h)
     end subroutine fit_and_score_harqj
 
     subroutine fit_and_score_harcj(row, daily, ret_cc, jump, train_nobs, test_first, h)
@@ -273,6 +533,7 @@ contains
         call fit_harj_variance(ret_cc, daily%bpv(1:nobs), jump, train_nobs, result, h)
         call fill_row(row, "BPV_JUMP", "HARCJ", 7, 0.0_dp, result%coef(1), result%coef(5), &
                       ret_cc(test_first:nobs), h(test_first:nobs), result%niter, result%converged)
+        call store_full_path(row, h)
     end subroutine fit_and_score_harcj
 
     subroutine fit_and_score_char(row, daily, ret_cc, train_nobs, test_first, h)
@@ -288,6 +549,7 @@ contains
         call fit_har_variance(ret_cc, daily%bpv(1:nobs), train_nobs, result, h)
         call fill_row(row, "BPV", "CHAR", 4, 0.0_dp, result%coef(1), 0.0_dp, ret_cc(test_first:nobs), &
                       h(test_first:nobs), result%niter, result%converged)
+        call store_full_path(row, h)
     end subroutine fit_and_score_char
 
     subroutine fit_and_score_charq(row, daily, ret_cc, train_nobs, test_first, h)
@@ -303,6 +565,7 @@ contains
         call fit_harq_variance(ret_cc, daily%bpv(1:nobs), daily%rq(1:nobs), train_nobs, result, h)
         call fill_row(row, "BPV", "CHARQ", 5, 0.0_dp, result%coef(1), result%coef(5), ret_cc(test_first:nobs), &
                       h(test_first:nobs), result%niter, result%converged)
+        call store_full_path(row, h)
     end subroutine fit_and_score_charq
 
     subroutine fit_and_score_har_negret(row, measure, ret_cc, x, train_nobs, test_first, h)
@@ -318,7 +581,24 @@ contains
         call fit_har_negret_variance(ret_cc, x, train_nobs, result, h)
         call fill_row(row, measure, "HAR_NEGRET", 5, 0.0_dp, result%coef(1), result%coef(5), ret_cc(test_first:nobs), &
                       h(test_first:nobs), result%niter, result%converged)
+        call store_full_path(row, h)
     end subroutine fit_and_score_har_negret
+
+    subroutine fit_and_score_har_lev(row, measure, ret_cc, x, train_nobs, test_first, h)
+        type(score_row_t), intent(out) :: row
+        character(len=*), intent(in) :: measure
+        real(dp), intent(in) :: ret_cc(:), x(:)
+        integer, intent(in) :: train_nobs, test_first
+        real(dp), intent(out) :: h(:)
+        type(har_lev_variance_result_t) :: result
+        integer :: nobs
+
+        nobs = size(ret_cc)
+        call fit_har_lev_variance(ret_cc, x, train_nobs, result, h)
+        call fill_row(row, measure, "HAR_LEV", 7, 0.0_dp, result%coef(1), result%coef(5), ret_cc(test_first:nobs), &
+                      h(test_first:nobs), result%niter, result%converged)
+        call store_full_path(row, h)
+    end subroutine fit_and_score_har_lev
 
     subroutine fit_and_score_midas(row, measure, ret_cc, x, train_nobs, test_first, h)
         type(score_row_t), intent(out) :: row
@@ -333,6 +613,7 @@ contains
         call fit_midas_variance(ret_cc, x, train_nobs, midas_lag_count, result, h)
         call fill_row(row, measure, "MIDAS_RV", 4, 0.0_dp, result%a, result%b, ret_cc(test_first:nobs), &
                       h(test_first:nobs), result%niter, result%converged)
+        call store_full_path(row, h)
     end subroutine fit_and_score_midas
 
     subroutine fit_and_score_heavy(row, measure, ret_cc, x, train_nobs, test_first, h)
@@ -348,6 +629,7 @@ contains
         call fit_heavy_variance(ret_cc, x, train_nobs, max_iter, gtol, result, h)
         call fill_row(row, measure, "HEAVY", 6, 0.0_dp, result%alpha, result%beta, ret_cc(test_first:nobs), &
                       h(test_first:nobs), result%niter, result%converged)
+        call store_full_path(row, h)
     end subroutine fit_and_score_heavy
 
     subroutine fit_and_score_semivar_har(row, daily, ret_cc, train_nobs, test_first, h)
@@ -363,6 +645,7 @@ contains
         call fit_semivar_har_variance(ret_cc, daily%rsv_pos(1:nobs), daily%rsv_neg(1:nobs), train_nobs, result, h)
         call fill_row(row, "RSV_POS_NEG", "SEMIVAR_HAR", 7, 0.0_dp, result%coef(1), 0.0_dp, &
                       ret_cc(test_first:nobs), h(test_first:nobs), result%niter, result%converged)
+        call store_full_path(row, h)
     end subroutine fit_and_score_semivar_har
 
     subroutine fit_and_score_realgarch(row, measure, ret_cc, x, train_nobs, test_first, h)
@@ -378,7 +661,82 @@ contains
         call fit_realized_garch(ret_cc, x, train_nobs, max_iter, gtol, result, h)
         call fill_row(row, measure, "REALGARCH", 8, 0.0_dp, result%params%omega, result%persist, &
                       ret_cc(test_first:nobs), h(test_first:nobs), result%niter, result%converged)
+        call store_full_path(row, h)
     end subroutine fit_and_score_realgarch
+
+    subroutine append_iv_augmented_rows(rows, irow, ret_cc, implied_var, train_nobs, test_first, h)
+        type(score_row_t), intent(inout) :: rows(:)
+        integer, intent(inout) :: irow
+        real(dp), intent(in) :: ret_cc(:), implied_var(:)
+        integer, intent(in) :: train_nobs, test_first
+        real(dp), intent(out) :: h(:)
+        type(affine2_variance_result_t) :: result
+        character(len=16) :: model_name
+        integer :: base_n, i, nobs
+
+        nobs = size(ret_cc)
+        base_n = irow
+        do i = 1, base_n
+            if (.not. allocated(rows(i)%h_all)) cycle
+            if (index(rows(i)%model, "IV") > 0 .or. trim(rows(i)%measure) == "IV") cycle
+            if (irow >= size(rows)) error stop "append_iv_augmented_rows: rows array too small"
+            call fit_affine2_variance(ret_cc, rows(i)%h_all, implied_var, train_nobs, max_iter, gtol, result, h)
+            model_name = iv_augmented_model_name(rows(i)%model)
+            irow = irow + 1
+            call fill_row(rows(irow), rows(i)%measure, model_name, rows(i)%k + 3, 0.0_dp, result%a, result%b2, &
+                          ret_cc(test_first:nobs), h(test_first:nobs), result%niter, result%converged)
+            call store_full_path(rows(irow), h)
+        end do
+    end subroutine append_iv_augmented_rows
+
+    pure character(len=16) function iv_augmented_model_name(model)
+        character(len=*), intent(in) :: model
+
+        iv_augmented_model_name = adjustl(trim(model) // "_IV")
+    end function iv_augmented_model_name
+
+    subroutine build_lagged_implied_variance(daily_dates, implied_dates, implied_close, adjust_weekday, implied_var)
+        integer, intent(in) :: daily_dates(:), implied_dates(:)
+        real(dp), intent(in) :: implied_close(:)
+        logical, intent(in) :: adjust_weekday
+        real(dp), intent(out) :: implied_var(:)
+        real(dp), allocatable :: implied_used(:)
+        real(dp) :: fallback, vol
+        integer :: i, j
+
+        if (size(daily_dates) < size(implied_var)) error stop "build_lagged_implied_variance: too few daily dates"
+        if (size(implied_dates) /= size(implied_close)) error stop "build_lagged_implied_variance: implied size mismatch"
+        allocate(implied_used(size(implied_close)))
+        if (adjust_weekday) then
+            call adjust_implied_vol_weekday_levels(implied_dates, implied_close, implied_used)
+        else
+            implied_used = implied_close
+        end if
+        if (count(implied_used > 0.0_dp) > 0) then
+            fallback = sum(implied_used, mask=implied_used > 0.0_dp) / real(count(implied_used > 0.0_dp), dp)
+        else
+            fallback = 20.0_dp
+        end if
+
+        if (size(implied_dates) < 1) then
+            implied_var = max((fallback / 100.0_dp)**2 / trading_days_per_year, min_var)
+            deallocate(implied_used)
+            return
+        end if
+        j = 1
+        do i = 1, size(implied_var)
+            do while (j < size(implied_dates))
+                if (implied_dates(j + 1) > daily_dates(i)) exit
+                j = j + 1
+            end do
+            vol = fallback
+            if (implied_dates(j) <= daily_dates(i)) then
+                if (implied_used(j) > 0.0_dp) vol = implied_used(j)
+            end if
+            implied_var(i) = max((vol / 100.0_dp)**2 / trading_days_per_year, min_var)
+        end do
+        deallocate(implied_used)
+    end subroutine build_lagged_implied_variance
 
     subroutine fill_row(row, measure, model, k, lambda, a, b, y, h, niter, converged)
         type(score_row_t), intent(out) :: row
@@ -406,6 +764,15 @@ contains
         row%h_test = h
     end subroutine fill_row
 
+    subroutine store_full_path(row, h)
+        type(score_row_t), intent(inout) :: row
+        real(dp), intent(in) :: h(:)
+
+        if (allocated(row%h_all)) deallocate(row%h_all)
+        allocate(row%h_all(size(h)))
+        row%h_all = h
+    end subroutine store_full_path
+
     subroutine print_implied_vol_correlation_table(forecast_dates, rows, implied_vol_dates, implied_vol_close, &
                                                    implied_vol_label, adjust_weekday)
         integer, intent(in) :: forecast_dates(:), implied_vol_dates(:)
@@ -414,6 +781,7 @@ contains
         character(len=*), intent(in) :: implied_vol_label
         logical, intent(in) :: adjust_weekday
         real(dp), allocatable :: model_vol(:), implied_vol(:), dlog_model(:), dlog_implied_vol(:)
+        real(dp), allocatable :: model_vol_mat(:, :)
         real(dp), allocatable :: implied_vol_used(:)
         real(dp), allocatable :: corr_level(:), corr_dlog(:)
         integer, allocatable :: corr_rank(:), dlog_rank(:), forecast_idx(:), implied_vol_idx(:)
@@ -432,20 +800,22 @@ contains
             return
         end if
 
-        allocate(model_vol(nmatch), implied_vol(nmatch))
+        allocate(model_vol(nmatch), implied_vol(nmatch), model_vol_mat(nmatch, size(rows)))
         allocate(corr_level(size(rows)), corr_dlog(size(rows)), corr_rank(size(rows)), dlog_rank(size(rows)))
         corr_level = -huge(1.0_dp)
         corr_dlog = -huge(1.0_dp)
+        do j = 1, nmatch
+            implied_vol(j) = max(implied_vol_used(implied_vol_idx(j)), 0.0_dp)
+        end do
         do i = 1, size(rows)
             do j = 1, nmatch
                 if (implied_vol_used(implied_vol_idx(j)) > 0.0_dp .and. rows(i)%h_test(forecast_idx(j)) > 0.0_dp) then
                     model_vol(j) = 100.0_dp*sqrt(trading_days_per_year*rows(i)%h_test(forecast_idx(j)))
-                    implied_vol(j) = implied_vol_used(implied_vol_idx(j))
                 else
                     model_vol(j) = 0.0_dp
-                    implied_vol(j) = 0.0_dp
                 end if
             end do
+            model_vol_mat(:, i) = model_vol
             corr_level(i) = correlation(model_vol, implied_vol)
             ndlog = nmatch - 1
             if (ndlog >= 2) then
@@ -476,7 +846,90 @@ contains
                   corr_level(i), corr_dlog(i), corr_rank(i), dlog_rank(i)
         end do
         print '(A)', "------------------------------------------------------------------------------------------------------"
+        if (fit_implied_vol_nnls) then
+            call print_implied_vol_nnls_table(rows, model_vol_mat, implied_vol, implied_vol_label)
+        end if
     end subroutine print_implied_vol_correlation_table
+
+    subroutine print_implied_vol_nnls_table(rows, model_vol_mat, implied_vol, implied_vol_label)
+        type(score_row_t), intent(in) :: rows(:)
+        real(dp), intent(in) :: model_vol_mat(:, :), implied_vol(:)
+        character(len=*), intent(in) :: implied_vol_label
+        real(dp), allocatable :: beta(:), fitted(:), xreg(:, :), tstat(:), pred_corr(:)
+        real(dp), allocatable :: retained_x(:, :)
+        character(len=32), allocatable :: retained_labels(:)
+        real(dp) :: sse, rmse, corr_fit
+        integer, allocatable :: order(:)
+        integer :: i, ii, k, ncoef, nmodel, niter, nnz, offset
+
+        nmodel = size(rows)
+        ncoef = nmodel + merge(1, 0, implied_vol_nnls_intercept)
+        allocate(beta(ncoef), fitted(size(implied_vol)), xreg(size(implied_vol), ncoef), tstat(ncoef), pred_corr(ncoef))
+        if (implied_vol_nnls_intercept) then
+            xreg(:, 1) = 1.0_dp
+            xreg(:, 2:ncoef) = model_vol_mat
+        else
+            xreg = model_vol_mat
+        end if
+
+        call nonnegative_least_squares(xreg, implied_vol, beta, sse, implied_vol_nnls_max_iter, &
+                                       implied_vol_nnls_tol, niter)
+        fitted = matmul(xreg, beta)
+        rmse = sqrt(sse / real(size(implied_vol), dp))
+        corr_fit = correlation(fitted, implied_vol)
+        nnz = count(beta > 1.0e-8_dp)
+        call active_nnls_tstats(xreg, implied_vol, beta, sse, tstat)
+        call predictor_correlations(xreg, implied_vol, pred_corr)
+        offset = merge(1, 0, implied_vol_nnls_intercept)
+
+        print '(A)', ""
+        print '(A,A,A)', "Non-negative regression of ", trim(implied_vol_label), " close on model forecasts"
+        print '(A,I0,A,I0,A,F8.4,A,F8.4)', "models: ", nmodel, "  nonzero: ", nnz, "  corr: ", corr_fit, &
+              "  rmse: ", rmse
+        print '(A,I0,A,ES10.3)', "iterations: ", niter, "  sse: ", sse
+        print '(A)', "---------------------------------------------------------------------------------------"
+        print '(A16,1X,A16,1X,A12,1X,A10,1X,A10)', "Measure", "Model", "coef", "t_stat", "corr"
+        print '(A)', "---------------------------------------------------------------------------------------"
+        if (implied_vol_nnls_intercept .and. beta(1) > 1.0e-8_dp) then
+            print '(A16,1X,A16,1X,F12.6,1X,F10.3,1X,F10.4)', "-", "INTERCEPT", beta(1), tstat(1), pred_corr(1)
+        end if
+        allocate(order(nmodel))
+        call rank_nonzero_by_tstat(beta(offset + 1:offset + nmodel), tstat(offset + 1:offset + nmodel), order)
+        do ii = 1, nmodel
+            i = order(ii)
+            if (i < 1) cycle
+            if (beta(i + offset) > 1.0e-8_dp) then
+                print '(A16,1X,A16,1X,F12.6,1X,F10.3,1X,F10.4)', rows(i)%measure, rows(i)%model, &
+                      beta(i + offset), tstat(i + offset), pred_corr(i + offset)
+            end if
+        end do
+        print '(A)', "---------------------------------------------------------------------------------------"
+        if (print_implied_vol_nnls_corr_matrix) then
+            k = count(beta(offset + 1:offset + nmodel) > 1.0e-8_dp)
+            if (k > 0) then
+                allocate(retained_x(size(implied_vol), k), retained_labels(k))
+                k = 0
+                do ii = 1, nmodel
+                    i = order(ii)
+                    if (i < 1) cycle
+                    if (beta(i + offset) <= 1.0e-8_dp) cycle
+                    k = k + 1
+                    retained_x(:, k) = model_vol_mat(:, i)
+                    retained_labels(k) = predictor_matrix_label(rows(i))
+                end do
+                call print_response_predictor_corr_matrix("Correlation matrix of response and retained NNLS predictors", &
+                                                          implied_vol_label, retained_labels, implied_vol, retained_x)
+                deallocate(retained_x, retained_labels)
+            end if
+        end if
+        deallocate(beta, fitted, xreg, tstat, pred_corr, order)
+    end subroutine print_implied_vol_nnls_table
+
+    pure character(len=32) function predictor_matrix_label(row)
+        type(score_row_t), intent(in) :: row
+
+        predictor_matrix_label = adjustl(trim(row%measure) // ":" // trim(row%model))
+    end function predictor_matrix_label
 
     subroutine rank_rows(rows)
         type(score_row_t), intent(inout) :: rows(:)
