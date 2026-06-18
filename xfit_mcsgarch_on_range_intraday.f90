@@ -9,12 +9,14 @@ module fit_mcsgarch_on_range_intraday_mod
     use kind_mod, only: dp
     use math_const_mod, only: log_sqrt_2pi, pi
     use date_mod, only: date_label, yyyymmdd
-    use market_data_mod, only: ohlcv_series_t, read_intraday_prices_csv, filter_intraday_session, intraday_bin_ids
+    use market_data_mod, only: ohlcv_series_t, read_intraday_prices_csv_auto, filter_intraday_session, &
+                               intraday_bin_ids, infer_bar_interval_seconds
     use garch_mcsgarch_mod, only: mcsgarch_params_t, mcsgarch_fit_result_t, estimate_diurnal_variance, &
                                   mcsgarch_filter, mcsgarch_nagarch_filter, mcsgarch_gjr_filter
     use distributions_mod, only: pdf_fs_skewt
     use bfgs_mod, only: bfgs_minimize
     use stats_mod, only: mean, variance
+    use glob_mod, only: glob, MAX_PATH_LEN
     implicit none
     private
 
@@ -42,7 +44,7 @@ module fit_mcsgarch_on_range_intraday_mod
         "MCSGARCH", "MCSNAGARCH", "MCSGJRGARCH"]
     ! Add "FS_SKEWT" here to restore skew-t fits.
     character(len=8), parameter :: fit_dist_names(*) = [character(len=8) :: &
-        "NORMAL"] ! , "T"]
+        "NORMAL", "T"]
     character(len=6), parameter :: lambda_names(*) = [character(len=6) :: &
         "ON0", "ONEST", "ON1"]
     character(len=5), parameter :: range_names(*) = [character(len=5) :: &
@@ -79,25 +81,44 @@ module fit_mcsgarch_on_range_intraday_mod
 contains
 
     ! Read OHLCV prices, build overnight/intraday returns, and fit all configured models.
-    subroutine run_fit_mcsgarch_on_range_intraday()
-        character(len=256) :: filename
+    subroutine run_fit_mcsgarch_on_range_intraday(max_files)
+        integer, intent(in), optional :: max_files
+        character(len=MAX_PATH_LEN), allocatable :: filenames(:)
+        integer :: i, imax
+        call input_filenames(filenames)
+        if (present(max_files)) then
+           imax = min(max_files, size(filenames))
+        else
+           imax = size(filenames)
+        end if
+        print "('max files, #files matching, #files used =',3(1x,i0),/)", &
+           max_files, size(filenames), imax
+        do i = 1, imax
+            if (i > 1) print '(A)', ""
+            call fit_file(trim(filenames(i)))
+        end do
+        deallocate(filenames)
+    end subroutine run_fit_mcsgarch_on_range_intraday
+
+    ! Fit all configured models to one intraday OHLCV file.
+    subroutine fit_file(filename)
+        character(len=*), intent(in) :: filename
         type(ohlcv_series_t) :: bars, regular_bars
         real(dp), allocatable :: intra_ret(:), intra_base(:), intra_range(:), intra_day_range(:)
         real(dp), allocatable :: intra_on_ret(:), intra_oc_ret(:), on_ret(:), on_scale(:)
         real(dp), allocatable :: diurnal_fit(:,:), q_fit(:,:)
         integer, allocatable :: bin_id(:), intra_dates(:), on_dates(:)
         type(on_intraday_fit_t), allocatable :: results(:)
-        integer :: nargs, nfit, ifit, imodel, idist, ilambda, irange, ioc, max_iter
+        integer :: nfit, ifit, imodel, idist, ilambda, irange, ioc, max_iter
         real(dp) :: gtol, t0, t1, read_sec, elapsed_sec
 
-        filename = "c:\python\intraday_prices\spy_5min_databento.csv"
-        nargs = command_argument_count()
-        if (nargs >= 1) call get_command_argument(1, filename)
-        max_iter = 120
+        max_iter = 5 ! 120
         gtol = 1.0e-5_dp
 
         call cpu_time(t0)
-        call read_intraday_prices_csv(trim(filename), bars)
+        print*,"reading intraday prices from " // trim(filename) ! debug
+        call read_intraday_prices_csv_auto(filename, bars)
+        print*,"read intraday prices from " // trim(filename) ! debug
         call cpu_time(t1)
         read_sec = t1 - t0
         call filter_intraday_session(bars, regular_bars)
@@ -134,7 +155,35 @@ contains
         deallocate(intra_ret, intra_base, intra_range, intra_day_range, intra_on_ret, intra_oc_ret, &
                    bin_id, intra_dates, on_ret, on_scale, on_dates)
         deallocate(results, diurnal_fit, q_fit)
-    end subroutine run_fit_mcsgarch_on_range_intraday
+    end subroutine fit_file
+
+    ! Use command-line files if supplied; otherwise run a short continuous-futures batch.
+    subroutine input_filenames(filenames)
+        character(len=MAX_PATH_LEN), allocatable, intent(out) :: filenames(:)
+        integer :: nargs, i
+        character (len=*), parameter :: file_pattern = "c:\python\intraday_prices\continuous\*.csv"
+
+        nargs = command_argument_count()
+        if (nargs > 0) then
+            allocate(filenames(nargs))
+            do i = 1, nargs
+                call get_command_argument(i, filenames(i))
+            end do
+        else
+            allocate(filenames(3))
+            if (file_pattern == "") then
+               filenames = [character(len=MAX_PATH_LEN) :: &
+                "c:\python\intraday_prices\continuous\ES.csv", &
+                "c:\python\intraday_prices\continuous\JY.csv", &
+                "c:\python\intraday_prices\continuous\TY.csv"]
+            else
+               call glob(file_pattern, filenames)
+               print "('input file glob: ',a)", trim(file_pattern)
+            end if
+        end if
+        print "('# input files: ',i0)", size(filenames)
+        print "('input files:',*(1x,a))", (trim(filenames(i)), i=1,size(filenames))
+    end subroutine input_filenames
 
     ! Fit one dynamic model and innovation distribution to the joint likelihood.
     subroutine fit_one_joint_model(model_name, dist_name, lambda_mode, range_mode, oc_mode, intra_ret, intra_base, intra_range, &
@@ -315,12 +364,13 @@ contains
         real(dp), allocatable :: intra_on_ret_all(:), intra_oc_ret_all(:)
         real(dp), allocatable :: on_all(:), on_scale_all(:)
         integer, allocatable :: bin_all(:), intra_dates_all(:), on_dates_all(:)
-        integer :: n, ndays, i, k, d, kon
+        integer :: n, ndays, i, k, d, kon, bar_seconds
         real(dp) :: fallback
 
         n = bars%nobs()
         if (n < 3) error stop "build_on_intraday_inputs: not enough regular-session bars"
-        call intraday_bin_ids(bars, bar_bins)
+        bar_seconds = infer_bar_interval_seconds(bars)
+        call intraday_bin_ids(bars, bar_bins, interval_seconds=bar_seconds)
         call map_days(bars, day_index, day_dates, day_first, day_last)
         ndays = size(day_dates)
         allocate(intraday_rv(ndays), intraday_range_rv(ndays), intraday_session_range_rv(ndays), &
@@ -1189,7 +1239,10 @@ contains
 end module fit_mcsgarch_on_range_intraday_mod
 
 program xfit_mcsgarch_on_range_intraday
+    use date_mod, only: print_program_header
     use fit_mcsgarch_on_range_intraday_mod, only: run_fit_mcsgarch_on_range_intraday
     implicit none
-    call run_fit_mcsgarch_on_range_intraday()
+    integer, parameter :: max_files = 1000
+    call print_program_header("xfit_mcsgarch_on_range_intraday.f90")
+    call run_fit_mcsgarch_on_range_intraday(max_files=max_files)
 end program xfit_mcsgarch_on_range_intraday
