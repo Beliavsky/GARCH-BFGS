@@ -16,9 +16,12 @@ module fit_mcsgarch_intraday_mod
                                   fit_mcsgarch_t, fit_mcsgarch_nagarch_t, fit_mcsgarch_gjr_t, &
                                   fit_mcsgarch_fs_skewt, fit_mcsgarch_nagarch_fs_skewt, fit_mcsgarch_gjr_fs_skewt
     use stats_mod, only: mean
+    use input_files_mod, only: collect_input_filenames, MAX_PATH_LEN
+    use path_utils_mod, only: basename_without_extension
     implicit none
     private
 
+    character(len=*), parameter :: file_pattern = "c:\python\intraday_prices\*.csv"
     real(dp), parameter :: min_daily_var = 1.0e-12_dp
     real(dp), parameter :: trading_days_per_year = 252.0_dp
     logical, parameter :: print_diurnal_curve = .false.
@@ -28,8 +31,6 @@ module fit_mcsgarch_intraday_mod
     logical, parameter :: print_squared_noise_acf = .true.
     integer, parameter :: diurnal_smooth_half_width = 2
     integer, parameter :: squared_noise_acf_lags(7) = [1, 2, 3, 6, 12, 39, 78]
-    character(len=*), parameter :: diurnal_curve_csv_file = "mcsgarch_diurnal_curve.csv"
-    character(len=*), parameter :: forecast_history_csv_file = "mcsgarch_intraday_forecasts.csv"
     character(len=12), parameter :: model_names(*) = [character(len=12) :: &
         "MCSGARCH", "MCSNAGARCH", "MCSGJRGARCH"]
     character(len=8), parameter :: dist_names(*) = [character(len=8) :: &
@@ -55,9 +56,25 @@ module fit_mcsgarch_intraday_mod
 
 contains
 
-    ! Read intraday prices, fit the MCS-GARCH model, and write diagnostic outputs.
+    ! Fit all configured MCS-GARCH models to each input file.
     subroutine run_fit_mcsgarch_intraday()
-        character(len=256) :: filename
+        character(len=MAX_PATH_LEN), allocatable :: filenames(:)
+        integer :: i
+
+        call collect_input_filenames(filenames, &
+            file_pattern=file_pattern, &
+            default_filenames=[character(len=MAX_PATH_LEN) :: &
+                "c:\python\intraday_prices\spy_5min_databento.csv"])
+        do i = 1, size(filenames)
+            if (i > 1) print '(A)', ""
+            call fit_one_file(trim(filenames(i)))
+        end do
+        deallocate(filenames)
+    end subroutine run_fit_mcsgarch_intraday
+
+    ! Read intraday prices, fit the MCS-GARCH model, and write diagnostic outputs.
+    subroutine fit_one_file(filename)
+        character(len=*), intent(in) :: filename
         type(ohlcv_series_t) :: bars, regular_bars
         real(dp), allocatable :: returns(:), daily_var(:), diurnal_var(:), q(:)
         real(dp), allocatable :: diurnal_fit(:,:), q_fit(:,:)
@@ -65,13 +82,12 @@ contains
         integer, allocatable :: bin_id(:), return_dates(:)
         type(mcsgarch_fit_result_t), allocatable :: fit(:)
         type(mcsgarch_fit_result_t) :: best_fit
-        integer :: nargs, max_iter, nobs, nfit, imodel, idist, ifit
+        integer :: max_iter, nobs, nfit, imodel, idist, ifit
         real(dp) :: gtol, t_start, t0, t1, t_end, read_sec, elapsed_sec
+        character(len=512) :: stem
 
         call cpu_time(t_start)
-        filename = "c:\python\intraday_prices\spy_5min_databento.csv"
-        nargs = command_argument_count()
-        if (nargs >= 1) call get_command_argument(1, filename)
+        stem = basename_without_extension(filename)
         max_iter = 120
         gtol = 1.0e-5_dp
 
@@ -107,15 +123,15 @@ contains
         if (print_diurnal_curve) call print_diurnal_variance_curve(bin_id, diurnal_var, &
                                                                     smooth_diurnal_curve, &
                                                                     diurnal_smooth_half_width)
-        if (write_diurnal_curve_csv) call write_diurnal_variance_curve_csv(diurnal_curve_csv_file, &
+        if (write_diurnal_curve_csv) call write_diurnal_variance_curve_csv(trim(stem) // "_mcsgarch_diurnal.csv", &
                                                                            bin_id, diurnal_var)
-        if (write_forecast_history_csv) call write_forecast_history_csv_file(forecast_history_csv_file, &
+        if (write_forecast_history_csv) call write_forecast_history_csv_file(trim(stem) // "_mcsgarch_forecasts.csv", &
                                                                              returns, daily_var, bin_id, &
                                                                              return_dates, diurnal_var, q, &
                                                                              best_fit%params, best_fit%persist)
 
         deallocate(returns, daily_var, bin_id, return_dates, diurnal_var, q, diurnal_fit, q_fit, fit, fit_sec)
-    end subroutine run_fit_mcsgarch_intraday
+    end subroutine fit_one_file
 
     ! Fit one configured dynamic model and innovation distribution.
     subroutine fit_configured_model(model_name, dist_name, returns, daily_var, bin_id, max_iter, gtol, fit, diurnal_var, q)

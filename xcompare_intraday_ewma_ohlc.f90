@@ -8,9 +8,11 @@ module compare_intraday_ewma_ohlc_mod
     use intraday_vol_baseline_mod, only: fit_lag1_diurnal_baseline, fit_lag1_diurnal_intraday_ewma_baseline, &
                                          parkinson_variance_proxy, garman_klass_variance_proxy, &
                                          intraday_ewma_multiplier_from_proxy, intraday_variance_forecast
+    use input_files_mod, only: collect_input_filenames, MAX_PATH_LEN
     implicit none
     private
 
+    character(len=*), parameter :: file_pattern = "c:\python\intraday_prices\*.csv"
     real(dp), parameter :: min_var = 1.0e-12_dp
     real(dp), parameter :: intraday_lambda = 0.94_dp
     logical, parameter :: smooth_diurnal_curve = .true.
@@ -28,20 +30,32 @@ module compare_intraday_ewma_ohlc_mod
 
 contains
 
-    ! Read intraday OHLCV data and compare EWMA update proxies by Gaussian likelihood.
+    ! Compare EWMA update proxies for each input file.
     subroutine run_compare_intraday_ewma_ohlc()
-        character(len=256) :: filename
+        character(len=MAX_PATH_LEN), allocatable :: filenames(:)
+        integer :: i
+
+        call collect_input_filenames(filenames, &
+            file_pattern=file_pattern, &
+            default_filenames=[character(len=MAX_PATH_LEN) :: &
+                "c:\python\intraday_prices\spy_5min_databento.csv"])
+        do i = 1, size(filenames)
+            if (i > 1) print '(A)', ""
+            call compare_one_file(trim(filenames(i)))
+        end do
+        deallocate(filenames)
+    end subroutine run_compare_intraday_ewma_ohlc
+
+    ! Read intraday OHLCV data and compare EWMA update proxies by Gaussian likelihood.
+    subroutine compare_one_file(filename)
+        character(len=*), intent(in) :: filename
         type(ohlcv_series_t) :: bars, regular_bars
         real(dp), allocatable :: returns(:), open_px(:), high_px(:), low_px(:), close_px(:)
         real(dp), allocatable :: daily_var(:), diurnal_var(:), q(:), h(:), proxy(:)
         integer, allocatable :: bin_id(:), date_id(:)
         type(ewma_row_t) :: rows(4)
-        integer :: nargs, nobs
+        integer :: nobs
         real(dp) :: t0, t1, read_sec, elapsed_sec
-
-        filename = "c:\python\intraday_prices\spy_5min_databento.csv"
-        nargs = command_argument_count()
-        if (nargs >= 1) call get_command_argument(1, filename)
 
         call cpu_time(t0)
         call read_intraday_prices_csv(trim(filename), bars)
@@ -78,7 +92,7 @@ contains
         call print_summary(trim(filename), regular_bars%nobs(), returns, date_id, bin_id, rows, read_sec, elapsed_sec)
 
         deallocate(returns, open_px, high_px, low_px, close_px, daily_var, diurnal_var, q, h, proxy, bin_id, date_id)
-    end subroutine run_compare_intraday_ewma_ohlc
+    end subroutine compare_one_file
 
     ! Convert regular-session bars to aligned returns and OHLC bars.
     subroutine build_return_ohlc_inputs(bars, returns, open_px, high_px, low_px, close_px, bin_id, date_id)
@@ -181,8 +195,10 @@ contains
 end module compare_intraday_ewma_ohlc_mod
 
 program xcompare_intraday_ewma_ohlc
+    use date_mod, only: print_program_header
     use compare_intraday_ewma_ohlc_mod, only: run_compare_intraday_ewma_ohlc
     implicit none
 
+    call print_program_header("xcompare_intraday_ewma_ohlc.f90")
     call run_compare_intraday_ewma_ohlc()
 end program xcompare_intraday_ewma_ohlc

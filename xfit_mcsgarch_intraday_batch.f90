@@ -12,10 +12,10 @@ module fit_mcsgarch_intraday_batch_mod
                                   fit_mcsgarch_t, fit_mcsgarch_nagarch_t, fit_mcsgarch_gjr_t, &
                                   fit_mcsgarch_fs_skewt, fit_mcsgarch_nagarch_fs_skewt, fit_mcsgarch_gjr_fs_skewt
     use stats_mod, only: mean
+    use input_files_mod, only: collect_input_filenames, MAX_PATH_LEN
     implicit none
     private
 
-    integer, parameter :: max_files = 256
     integer, parameter :: path_len = 512
     real(dp), parameter :: min_daily_var = 1.0e-12_dp
     logical, parameter :: smooth_diurnal_curve = .true.
@@ -52,22 +52,21 @@ contains
 
     ! Fit all configured MCS-GARCH models to each requested intraday price file.
     subroutine run_fit_mcsgarch_intraday_batch()
-        character(len=path_len), allocatable :: files(:)
+        character(len=MAX_PATH_LEN), allocatable :: files(:)
         type(batch_result_t), allocatable :: results(:)
-        integer :: nfiles, i
+        integer :: i
         real(dp) :: t0, t1
 
-        call collect_input_files(files, nfiles)
-        if (nfiles < 1) error stop "xfit_mcsgarch_intraday_batch: no input files found"
-        allocate(results(nfiles))
+        call collect_input_filenames(files, file_pattern=default_file_pattern)
+        if (size(files) < 1) error stop "xfit_mcsgarch_intraday_batch: no input files found"
+        allocate(results(size(files)))
 
         print '(A)', "MCS-GARCH intraday batch fits"
-        print '(A,I0)', "Input files: ", nfiles
         print '(A,I0,A,I0)', "Configured models: ", size(model_names), "  distributions: ", size(dist_names)
         print '(A)', ""
 
         call cpu_time(t0)
-        do i = 1, nfiles
+        do i = 1, size(files)
             call fit_one_file(trim(files(i)), results(i))
         end do
         call cpu_time(t1)
@@ -76,75 +75,6 @@ contains
         print '(A,F10.3)', "Batch elapsed seconds: ", t1 - t0
         deallocate(files, results)
     end subroutine run_fit_mcsgarch_intraday_batch
-
-    ! Expand command-line filenames and wildcard patterns into a file list.
-    subroutine collect_input_files(files, nfiles)
-        character(len=path_len), allocatable, intent(out) :: files(:)
-        integer, intent(out) :: nfiles
-        character(len=path_len) :: arg
-        integer :: nargs, i
-
-        allocate(files(max_files))
-        nfiles = 0
-        nargs = command_argument_count()
-        if (nargs < 1) then
-            call append_pattern_files(default_file_pattern, files, nfiles)
-        else
-            do i = 1, nargs
-                call get_command_argument(i, arg)
-                if (has_wildcard(trim(arg))) then
-                    call append_pattern_files(trim(arg), files, nfiles)
-                else
-                    call append_file(trim(arg), files, nfiles)
-                end if
-            end do
-        end if
-        files = files(1:nfiles)
-    end subroutine collect_input_files
-
-    ! Return true when a command argument contains wildcard metacharacters.
-    logical function has_wildcard(text)
-        character(len=*), intent(in) :: text
-
-        has_wildcard = index(text, "*") > 0 .or. index(text, "?") > 0
-    end function has_wildcard
-
-    ! Append one filename to the fixed-capacity batch list.
-    subroutine append_file(filename, files, nfiles)
-        character(len=*), intent(in) :: filename
-        character(len=path_len), intent(inout) :: files(:)
-        integer, intent(inout) :: nfiles
-
-        if (len_trim(filename) < 1) return
-        if (nfiles >= size(files)) error stop "append_file: too many input files"
-        nfiles = nfiles + 1
-        files(nfiles) = filename
-    end subroutine append_file
-
-    ! Expand a Windows wildcard pattern and append matching paths.
-    subroutine append_pattern_files(pattern, files, nfiles)
-        character(len=*), intent(in) :: pattern
-        character(len=path_len), intent(inout) :: files(:)
-        integer, intent(inout) :: nfiles
-        character(len=*), parameter :: tmp_file = "xfit_mcsgarch_intraday_batch_files.tmp"
-        character(len=3*path_len) :: command
-        character(len=path_len) :: line
-        integer :: unit, ios, exitstat
-
-        open(newunit=unit, file=tmp_file, status="replace", action="write")
-        close(unit)
-        command = 'cmd /c dir /b /s "' // trim(pattern) // '" > "' // tmp_file // '"'
-        call execute_command_line(trim(command), exitstat=exitstat)
-        if (exitstat /= 0) return
-
-        open(newunit=unit, file=tmp_file, status="old", action="read")
-        do
-            read(unit,'(A)',iostat=ios) line
-            if (ios /= 0) exit
-            call append_file(trim(line), files, nfiles)
-        end do
-        close(unit, status="delete")
-    end subroutine append_pattern_files
 
     ! Read one file, build inputs, fit all model/distribution pairs, and summarize selection.
     subroutine fit_one_file(filename, result)
@@ -489,7 +419,9 @@ contains
 end module fit_mcsgarch_intraday_batch_mod
 
 program xfit_mcsgarch_intraday_batch
+    use date_mod, only: print_program_header
     use fit_mcsgarch_intraday_batch_mod, only: run_fit_mcsgarch_intraday_batch
     implicit none
+    call print_program_header("xfit_mcsgarch_intraday_batch.f90")
     call run_fit_mcsgarch_intraday_batch()
 end program xfit_mcsgarch_intraday_batch

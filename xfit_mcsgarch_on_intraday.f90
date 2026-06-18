@@ -15,9 +15,11 @@ module fit_mcsgarch_on_intraday_mod
     use distributions_mod, only: pdf_fs_skewt
     use bfgs_mod, only: bfgs_minimize
     use stats_mod, only: mean, variance
+    use input_files_mod, only: collect_input_filenames, MAX_PATH_LEN
     implicit none
     private
 
+    character(len=*), parameter :: file_pattern = "c:\python\intraday_prices\*.csv"
     real(dp), parameter :: min_var = 1.0e-12_dp
     real(dp), parameter :: min_pdf = 1.0e-300_dp
     real(dp), parameter :: persist_max = 0.999_dp
@@ -60,20 +62,33 @@ module fit_mcsgarch_on_intraday_mod
 
 contains
 
-    ! Read OHLCV prices, build overnight/intraday returns, and fit all configured models.
+    ! Fit all configured models to each input file obtained from command-line, glob, or default.
     subroutine run_fit_mcsgarch_on_intraday()
-        character(len=256) :: filename
+        character(len=MAX_PATH_LEN), allocatable :: filenames(:)
+        integer :: i
+
+        call collect_input_filenames(filenames, &
+            file_pattern=file_pattern, &
+            default_filenames=[character(len=MAX_PATH_LEN) :: &
+                "c:\python\intraday_prices\spy_5min_databento.csv"])
+        do i = 1, size(filenames)
+            if (i > 1) print '(A)', ""
+            call fit_one_file(trim(filenames(i)))
+        end do
+        deallocate(filenames)
+    end subroutine run_fit_mcsgarch_on_intraday
+
+    ! Read OHLCV prices, build overnight/intraday returns, and fit all configured models.
+    subroutine fit_one_file(filename)
+        character(len=*), intent(in) :: filename
         type(ohlcv_series_t) :: bars, regular_bars
         real(dp), allocatable :: intra_ret(:), intra_base(:), intra_on_ret(:), on_ret(:), on_scale(:)
         real(dp), allocatable :: diurnal_fit(:,:), q_fit(:,:)
         integer, allocatable :: bin_id(:), intra_dates(:), on_dates(:)
         type(on_intraday_fit_t), allocatable :: results(:)
-        integer :: nargs, nfit, ifit, imodel, idist, ilambda, max_iter
+        integer :: nfit, ifit, imodel, idist, ilambda, max_iter
         real(dp) :: gtol, t0, t1, read_sec, elapsed_sec
 
-        filename = "c:\python\intraday_prices\spy_5min_databento.csv"
-        nargs = command_argument_count()
-        if (nargs >= 1) call get_command_argument(1, filename)
         max_iter = 120
         gtol = 1.0e-5_dp
 
@@ -108,7 +123,7 @@ contains
 
         deallocate(intra_ret, intra_base, intra_on_ret, bin_id, intra_dates, on_ret, on_scale, on_dates)
         deallocate(results, diurnal_fit, q_fit)
-    end subroutine run_fit_mcsgarch_on_intraday
+    end subroutine fit_one_file
 
     ! Fit one dynamic model and innovation distribution to the joint likelihood.
     subroutine fit_one_joint_model(model_name, dist_name, lambda_mode, intra_ret, intra_base, intra_on_ret, &
@@ -846,7 +861,9 @@ contains
 end module fit_mcsgarch_on_intraday_mod
 
 program xfit_mcsgarch_on_intraday
+    use date_mod, only: print_program_header
     use fit_mcsgarch_on_intraday_mod, only: run_fit_mcsgarch_on_intraday
     implicit none
+    call print_program_header("xfit_mcsgarch_on_intraday.f90")
     call run_fit_mcsgarch_on_intraday()
 end program xfit_mcsgarch_on_intraday

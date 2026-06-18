@@ -9,9 +9,11 @@ module compare_intraday_ewma_freq_mod
                                default_session_start_seconds
     use intraday_vol_baseline_mod, only: fit_lag1_diurnal_baseline, intraday_ewma_multiplier_from_proxy, &
                                          intraday_variance_forecast
+    use input_files_mod, only: collect_input_filenames, MAX_PATH_LEN
     implicit none
     private
 
+    character(len=*), parameter :: file_pattern = "c:\python\databento\*.csv"
     real(dp), parameter :: min_var = 1.0e-12_dp
     real(dp), parameter :: intraday_lambda = 0.94_dp
     real(dp), parameter :: scale_log_search_half_width = 8.0_dp
@@ -67,16 +69,28 @@ module compare_intraday_ewma_freq_mod
 
 contains
 
-    ! Read data and compare predictor frequencies for every configured target frequency.
+    ! Compare EWMA predictor frequencies for each input file.
     subroutine run_compare_intraday_ewma_freq()
-        character(len=256) :: filename
-        type(ohlcv_series_t) :: raw_bars, regular_bars
-        integer :: nargs, itarget
-        real(dp) :: t0, t1, read_sec, elapsed_sec
+        character(len=MAX_PATH_LEN), allocatable :: filenames(:)
+        integer :: i
 
-        filename = "c:\python\databento\spy_1s_databento.csv"
-        nargs = command_argument_count()
-        if (nargs >= 1) call get_command_argument(1, filename)
+        call collect_input_filenames(filenames, &
+            file_pattern=file_pattern, &
+            default_filenames=[character(len=MAX_PATH_LEN) :: &
+                "c:\python\databento\spy_1s_databento.csv"])
+        do i = 1, size(filenames)
+            if (i > 1) print '(A)', ""
+            call compare_one_file(trim(filenames(i)))
+        end do
+        deallocate(filenames)
+    end subroutine run_compare_intraday_ewma_freq
+
+    ! Read data and compare predictor frequencies for every configured target frequency.
+    subroutine compare_one_file(filename)
+        character(len=*), intent(in) :: filename
+        type(ohlcv_series_t) :: raw_bars, regular_bars
+        integer :: itarget
+        real(dp) :: t0, t1, read_sec, elapsed_sec
 
         call cpu_time(t0)
         call read_intraday_prices_csv(trim(filename), raw_bars)
@@ -98,7 +112,7 @@ contains
         elapsed_sec = t1 - t0
         print '(A,F10.3)', "Data read seconds: ", read_sec
         print '(A,F10.3)', "Elapsed seconds:   ", elapsed_sec
-    end subroutine run_compare_intraday_ewma_freq
+    end subroutine compare_one_file
 
     ! Compare all valid predictor frequencies for one target frequency.
     subroutine compare_one_target(source_bars, target_sec)
@@ -802,8 +816,10 @@ contains
 end module compare_intraday_ewma_freq_mod
 
 program xcompare_intraday_ewma_freq
+    use date_mod, only: print_program_header
     use compare_intraday_ewma_freq_mod, only: run_compare_intraday_ewma_freq
     implicit none
 
+    call print_program_header("xcompare_intraday_ewma_freq.f90")
     call run_compare_intraday_ewma_freq()
 end program xcompare_intraday_ewma_freq

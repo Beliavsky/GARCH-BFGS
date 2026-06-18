@@ -16,7 +16,7 @@ module fit_mcsgarch_on_range_intraday_mod
     use distributions_mod, only: pdf_fs_skewt
     use bfgs_mod, only: bfgs_minimize
     use stats_mod, only: mean, variance
-    use glob_mod, only: glob, MAX_PATH_LEN
+    use input_files_mod, only: collect_input_filenames, MAX_PATH_LEN
     implicit none
     private
 
@@ -40,6 +40,7 @@ module fit_mcsgarch_on_range_intraday_mod
     integer, parameter :: range_both = 4
     integer, parameter :: oc_zero = 1
     integer, parameter :: oc_nagarch = 2
+    character(len=*), parameter :: file_pattern = "c:\python\intraday_prices\continuous\*.csv"
     character(len=12), parameter :: model_names(*) = [character(len=12) :: &
         "MCSGARCH", "MCSNAGARCH", "MCSGJRGARCH"]
     ! Add "FS_SKEWT" here to restore skew-t fits.
@@ -85,14 +86,18 @@ contains
         integer, intent(in), optional :: max_files
         character(len=MAX_PATH_LEN), allocatable :: filenames(:)
         integer :: i, imax
-        call input_filenames(filenames)
+        call collect_input_filenames(filenames, &
+            file_pattern=file_pattern, &
+            default_filenames=[character(len=MAX_PATH_LEN) :: &
+                "c:\python\intraday_prices\continuous\ES.csv", &
+                "c:\python\intraday_prices\continuous\JY.csv", &
+                "c:\python\intraday_prices\continuous\TY.csv"])
         if (present(max_files)) then
-           imax = min(max_files, size(filenames))
+            imax = min(max_files, size(filenames))
         else
-           imax = size(filenames)
+            imax = size(filenames)
         end if
-        print "('max files, #files matching, #files used =',3(1x,i0),/)", &
-           max_files, size(filenames), imax
+        print "('# files matching, # files used =',2(1x,i0),/)", size(filenames), imax
         do i = 1, imax
             if (i > 1) print '(A)', ""
             call fit_file(trim(filenames(i)))
@@ -156,34 +161,6 @@ contains
                    bin_id, intra_dates, on_ret, on_scale, on_dates)
         deallocate(results, diurnal_fit, q_fit)
     end subroutine fit_file
-
-    ! Use command-line files if supplied; otherwise run a short continuous-futures batch.
-    subroutine input_filenames(filenames)
-        character(len=MAX_PATH_LEN), allocatable, intent(out) :: filenames(:)
-        integer :: nargs, i
-        character (len=*), parameter :: file_pattern = "c:\python\intraday_prices\continuous\*.csv"
-
-        nargs = command_argument_count()
-        if (nargs > 0) then
-            allocate(filenames(nargs))
-            do i = 1, nargs
-                call get_command_argument(i, filenames(i))
-            end do
-        else
-            allocate(filenames(3))
-            if (file_pattern == "") then
-               filenames = [character(len=MAX_PATH_LEN) :: &
-                "c:\python\intraday_prices\continuous\ES.csv", &
-                "c:\python\intraday_prices\continuous\JY.csv", &
-                "c:\python\intraday_prices\continuous\TY.csv"]
-            else
-               call glob(file_pattern, filenames)
-               print "('input file glob: ',a)", trim(file_pattern)
-            end if
-        end if
-        print "('# input files: ',i0)", size(filenames)
-        print "('input files:',*(1x,a))", (trim(filenames(i)), i=1,size(filenames))
-    end subroutine input_filenames
 
     ! Fit one dynamic model and innovation distribution to the joint likelihood.
     subroutine fit_one_joint_model(model_name, dist_name, lambda_mode, range_mode, oc_mode, intra_ret, intra_base, intra_range, &

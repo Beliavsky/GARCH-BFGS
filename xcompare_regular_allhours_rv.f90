@@ -16,6 +16,7 @@ module compare_regular_allhours_rv_mod
                                          gaussian_variance_loglik, qlike_loss
     use stats_mod, only: demean_first
     use program_utils_mod, only: elapsed_since
+    use input_files_mod, only: collect_input_filenames, MAX_PATH_LEN
     implicit none
     private
 
@@ -49,12 +50,16 @@ contains
 
     ! Fit the comparison to command-line files or a default ES/JY/TY batch.
     subroutine run_compare_regular_allhours_rv()
-        character(len=256), allocatable :: filenames(:)
+        character(len=MAX_PATH_LEN), allocatable :: filenames(:)
         real(dp) :: t0, elapsed_sec
         integer :: i
 
         call print_program_header("xcompare_regular_allhours_rv.f90")
-        call input_filenames(filenames)
+        call collect_input_filenames(filenames, &
+            default_filenames=[character(len=MAX_PATH_LEN) :: &
+                "c:\python\intraday_prices\continuous\ES.csv", &
+                "c:\python\intraday_prices\continuous\JY.csv", &
+                "c:\python\intraday_prices\continuous\TY.csv"])
         call cpu_time(t0)
         do i = 1, size(filenames)
             if (i > 1) print '(A)', ""
@@ -113,26 +118,6 @@ contains
                            rows(1:irow), read_sec, build_sec, fit_sec)
         deallocate(ret_cc, regular_rv, all_rv, outside_rv, forecast_dates, h, rows)
     end subroutine compare_one_file
-
-    ! Use command-line files if supplied; otherwise compare a small futures batch.
-    subroutine input_filenames(filenames)
-        character(len=256), allocatable, intent(out) :: filenames(:)
-        integer :: nargs, i
-
-        nargs = command_argument_count()
-        if (nargs > 0) then
-            allocate(filenames(nargs))
-            do i = 1, nargs
-                call get_command_argument(i, filenames(i))
-            end do
-        else
-            allocate(filenames(3))
-            filenames = [character(len=256) :: &
-                "c:\python\intraday_prices\continuous\ES.csv", &
-                "c:\python\intraday_prices\continuous\JY.csv", &
-                "c:\python\intraday_prices\continuous\TY.csv"]
-        end if
-    end subroutine input_filenames
 
     ! Align all-hours close-to-close returns with same-date regular/all-hours RV.
     subroutine build_aligned_targets(all_daily, regular_daily, ret_cc, regular_rv, all_rv, outside_rv, forecast_dates)
