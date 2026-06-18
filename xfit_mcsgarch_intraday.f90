@@ -11,7 +11,8 @@ module fit_mcsgarch_intraday_mod
     use date_mod, only: date_label, yyyymmdd, seconds_per_minute, seconds_per_hour
     use market_data_mod, only: ohlcv_series_t, read_intraday_prices_csv, filter_intraday_session, intraday_bin_ids, &
                                default_bar_minutes, default_session_start_seconds
-    use garch_mcsgarch_mod, only: mcsgarch_fit_result_t, fit_mcsgarch, fit_mcsgarch_nagarch, fit_mcsgarch_gjr, &
+    use garch_mcsgarch_mod, only: mcsgarch_params_t, mcsgarch_fit_result_t, mcsgarch_remaining_var, &
+                                  fit_mcsgarch, fit_mcsgarch_nagarch, fit_mcsgarch_gjr, &
                                   fit_mcsgarch_t, fit_mcsgarch_nagarch_t, fit_mcsgarch_gjr_t, &
                                   fit_mcsgarch_fs_skewt, fit_mcsgarch_nagarch_fs_skewt, fit_mcsgarch_gjr_fs_skewt
     use stats_mod, only: mean
@@ -63,6 +64,7 @@ contains
         real(dp), allocatable :: fit_sec(:)
         integer, allocatable :: bin_id(:), return_dates(:)
         type(mcsgarch_fit_result_t), allocatable :: fit(:)
+        type(mcsgarch_fit_result_t) :: best_fit
         integer :: nargs, max_iter, nobs, nfit, imodel, idist, ifit
         real(dp) :: gtol, t_start, t0, t1, t_end, read_sec, elapsed_sec
 
@@ -95,7 +97,7 @@ contains
                 fit_sec(ifit) = t1 - t0
             end do
         end do
-        call select_best_fit_path(fit, diurnal_fit, q_fit, diurnal_var, q)
+        call select_best_fit_path(fit, diurnal_fit, q_fit, diurnal_var, q, best_fit)
         call cpu_time(t_end)
         elapsed_sec = t_end - t_start
         call print_fit_summary(trim(filename), regular_bars%nobs(), returns, daily_var, bin_id, return_dates, &
@@ -109,7 +111,8 @@ contains
                                                                            bin_id, diurnal_var)
         if (write_forecast_history_csv) call write_forecast_history_csv_file(forecast_history_csv_file, &
                                                                              returns, daily_var, bin_id, &
-                                                                             return_dates, diurnal_var, q)
+                                                                             return_dates, diurnal_var, q, &
+                                                                             best_fit%params, best_fit%persist)
 
         deallocate(returns, daily_var, bin_id, return_dates, diurnal_var, q, diurnal_fit, q_fit, fit, fit_sec)
     end subroutine run_fit_mcsgarch_intraday
@@ -254,15 +257,17 @@ contains
     end subroutine map_days
 
     ! Select the fitted variance path from the configured fit with the highest log likelihood.
-    subroutine select_best_fit_path(fit, diurnal_fit, q_fit, diurnal_best, q_best)
+    subroutine select_best_fit_path(fit, diurnal_fit, q_fit, diurnal_best, q_best, best_fit)
         type(mcsgarch_fit_result_t), intent(in) :: fit(:)
         real(dp), intent(in) :: diurnal_fit(:,:), q_fit(:,:)
         real(dp), intent(out) :: diurnal_best(:), q_best(:)
+        type(mcsgarch_fit_result_t), intent(out) :: best_fit
         integer :: best_index
 
         best_index = maxloc(fit%loglik, dim=1)
         diurnal_best = diurnal_fit(:, best_index)
         q_best = q_fit(:, best_index)
+        best_fit = fit(best_index)
     end subroutine select_best_fit_path
 
     ! Print the fitted MCS-GARCH parameter rows and data/timing summary.
@@ -736,34 +741,72 @@ contains
         deallocate(bin_sum, bin_count)
     end subroutine write_diurnal_variance_curve_csv
 
-    ! Write intraday return, daily-volatility, and MCS-GARCH forecast history to CSV.
-    subroutine write_forecast_history_csv_file(filename, returns, daily_var, bin_id, return_dates, diurnal_var, q)
+    ! Write intraday return, MCS-GARCH forecasts, and remaining-session variance forecasts to CSV.
+    !
+    ! Columns added beyond the per-bar fit: remaining_var_garch (GARCH multi-step
+    ! remaining-session variance), remaining_var_diurnal (diurnal-only baseline),
+    ! and realized_remaining_var (sum of squared returns from the next bar to session end).
+    subroutine write_forecast_history_csv_file(filename, returns, daily_var, bin_id, return_dates, &
+                                               diurnal_var, q, params, persist)
         character(len=*), intent(in) :: filename
-        real(dp), intent(in) :: returns(:), daily_var(:), diurnal_var(:), q(:)
+        real(dp), intent(in) :: returns(:), daily_var(:), diurnal_var(:), q(:), persist
+        type(mcsgarch_params_t), intent(in) :: params
         integer, intent(in) :: bin_id(:), return_dates(:)
-        integer :: unit, i, intraday_returns_per_day
+        integer :: unit, i, b, nobs, intraday_returns_per_day, nbins
         real(dp) :: intraday_var, daily_vol_ann_pct, intraday_vol_ann_pct
+        real(dp) :: rem_garch, rem_diurnal, realized_rem
+        real(dp), allocatable :: bin_diurnal(:), bin_tail_sum(:), realized_remaining(:)
 
-        if (size(returns) /= size(daily_var) .or. size(returns) /= size(diurnal_var) .or. &
-            size(returns) /= size(q) .or. size(returns) /= size(bin_id) .or. &
-            size(returns) /= size(return_dates)) then
+        nobs = size(returns)
+        if (size(daily_var) /= nobs .or. size(diurnal_var) /= nobs .or. size(q) /= nobs .or. &
+            size(bin_id) /= nobs .or. size(return_dates) /= nobs) then
             error stop "write_forecast_history_csv_file: array sizes differ"
         end if
 
         intraday_returns_per_day = maxval(bin_id) - minval(bin_id) + 1
+        nbins = maxval(bin_id)
+
+        ! Build diurnal curve and cumulative tail sums indexed by bin number.
+        allocate(bin_diurnal(nbins), bin_tail_sum(nbins))
+        bin_diurnal = 0.0_dp
+        do i = 1, nobs
+            bin_diurnal(bin_id(i)) = diurnal_var(i)
+        end do
+        bin_tail_sum(nbins) = 0.0_dp
+        do b = nbins - 1, 1, -1
+            bin_tail_sum(b) = bin_tail_sum(b + 1) + bin_diurnal(b + 1)
+        end do
+
+        ! Cumulative sum of squared returns from each bar to the end of its session day.
+        allocate(realized_remaining(nobs))
+        realized_remaining(nobs) = 0.0_dp
+        do i = nobs - 1, 1, -1
+            if (return_dates(i + 1) == return_dates(i)) then
+                realized_remaining(i) = realized_remaining(i + 1) + returns(i + 1)**2
+            else
+                realized_remaining(i) = 0.0_dp
+            end if
+        end do
+
         open(newunit=unit, file=filename, status="replace", action="write")
-        write(unit,'(A)') "date,time,bin,return_pct,daily_var,daily_vol_ann_pct,diurnal_var,q,intraday_var,intraday_vol_ann_pct"
-        do i = 1, size(returns)
+        write(unit,'(A)') "date,time,bin,return_pct,daily_var,daily_vol_ann_pct,diurnal_var,q," // &
+            "intraday_var,intraday_vol_ann_pct,remaining_var_garch,remaining_var_diurnal,realized_remaining_var"
+        do i = 1, nobs
+            b = bin_id(i)
             intraday_var = max(daily_var(i) * diurnal_var(i) * q(i), min_daily_var)
             daily_vol_ann_pct = 100.0_dp * sqrt(max(daily_var(i), min_daily_var) * trading_days_per_year)
             intraday_vol_ann_pct = 100.0_dp * sqrt(intraday_var * real(intraday_returns_per_day, dp) * &
                                                    trading_days_per_year)
-            write(unit,'(A,",",A,",",I0,",",ES16.8,",",ES16.8,",",F12.6,",",ES16.8,",",ES16.8,",",ES16.8,",",F12.6)') &
-                date_label(return_dates(i)), time_of_day_label(bin_end_seconds(bin_id(i))), bin_id(i), &
+            rem_garch = mcsgarch_remaining_var(params, persist, q(i), daily_var(i), bin_diurnal(b + 1:nbins))
+            rem_diurnal = max(daily_var(i) * bin_tail_sum(b), 0.0_dp)
+            realized_rem = realized_remaining(i)
+            write(unit,'(A,",",A,",",I0,2(",",ES16.8),",",F12.6,2(",",ES16.8),",",ES16.8,",",F12.6,3(",",ES16.8))') &
+                date_label(return_dates(i)), time_of_day_label(bin_end_seconds(bin_id(i))), b, &
                 100.0_dp*returns(i), daily_var(i), daily_vol_ann_pct, diurnal_var(i), q(i), &
-                intraday_var, intraday_vol_ann_pct
+                intraday_var, intraday_vol_ann_pct, rem_garch, rem_diurnal, realized_rem
         end do
         close(unit)
+        deallocate(bin_diurnal, bin_tail_sum, realized_remaining)
         print '(A,A)', "Forecast history CSV: ", trim(filename)
     end subroutine write_forecast_history_csv_file
 
@@ -787,7 +830,9 @@ contains
 end module fit_mcsgarch_intraday_mod
 
 program xfit_mcsgarch_intraday
+    use date_mod, only: print_program_header
     use fit_mcsgarch_intraday_mod, only: run_fit_mcsgarch_intraday
     implicit none
+    call print_program_header("xfit_mcsgarch_intraday.f90")
     call run_fit_mcsgarch_intraday()
 end program xfit_mcsgarch_intraday
