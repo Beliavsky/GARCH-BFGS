@@ -2,6 +2,7 @@
 
 module intraday_summary_mod
     use kind_mod, only: dp
+    use date_mod, only: date_time_t, operator(-)
     use market_data_mod, only: ohlcv_series_t, infer_bar_interval_seconds, &
         peek_ohlcv_stream_version, ohlcv_tick_stream_version, ohlcv_dp_stream_version
     use path_utils_mod, only: has_extension, basename
@@ -13,6 +14,8 @@ module intraday_summary_mod
     integer, parameter  :: trading_days_per_year = 252
     real(dp), parameter :: scale_ret = 100.0_dp
     integer, parameter  :: k_extremes = 5
+    logical, parameter  :: print_time_gaps = .true.
+    integer, parameter  :: max_gap_rows = 10
 
     type, public :: bar_t
         character(len=19) :: dt     = ""
@@ -54,10 +57,11 @@ module intraday_summary_mod
         type(ret_bar_t)             :: bot_ret(k_extremes)
     end type file_summary_t
 
-    public :: scale_ret, k_extremes
+    public :: scale_ret, k_extremes, print_time_gaps, max_gap_rows
     public :: compute_intraday_summary
     public :: print_intraday_summary
     public :: print_summary_table
+    public :: print_time_gap_table
 
 contains
 
@@ -249,6 +253,62 @@ contains
         print '(A,F10.3)', "Read seconds:    ", s%read_sec
     end subroutine print_intraday_summary
 
+    ! Print a frequency table of consecutive-observation time gaps.
+    ! Only timestamps are used; no price/volume data needed.
+    subroutine print_time_gap_table(timestamps)
+        type(date_time_t), intent(in) :: timestamps(:)
+        integer, allocatable :: gaps(:), ugap(:), ucnt(:)
+        real(dp) :: pct, cum_pct
+        integer  :: n, n_gaps, n_uniq, i, j, max_gap_val, max_gap_cnt
+
+        n = size(timestamps)
+        if (n < 2) return
+        n_gaps = n - 1
+        allocate(gaps(n_gaps))
+        do i = 2, n
+            gaps(i-1) = (timestamps(i)%date - timestamps(i-1)%date) * 86400 + &
+                        timestamps(i)%seconds_since_midnight() - &
+                        timestamps(i-1)%seconds_since_midnight()
+        end do
+        call qsort_int(gaps, 1, n_gaps)
+
+        ! Build unique (gap_val, count) pairs from sorted gaps array.
+        allocate(ugap(n_gaps), ucnt(n_gaps))
+        n_uniq = 0
+        i = 1
+        do while (i <= n_gaps)
+            n_uniq = n_uniq + 1
+            j = i
+            do while (j < n_gaps)
+                if (gaps(j+1) /= gaps(i)) exit
+                j = j + 1
+            end do
+            ugap(n_uniq) = gaps(i)
+            ucnt(n_uniq) = j - i + 1
+            i = j + 1
+        end do
+        deallocate(gaps)
+
+        max_gap_val = ugap(n_uniq)   ! last in ascending-sorted list
+        max_gap_cnt = ucnt(n_uniq)
+
+        ! Sort by count descending; carry gap values along.
+        call qsort_int_pair_desc(ucnt, ugap, 1, n_uniq)
+
+        print '(A)', "Gap frequency (seconds between observations):"
+        print '(A8,A12,A10,A10)', "  Gap(s)", "       Count", "  Fraction", "  Cum.Freq"
+        cum_pct = 0.0_dp
+        do i = 1, min(n_uniq, max_gap_rows)
+            pct     = 100.0_dp * real(ucnt(i), dp) / real(n_gaps, dp)
+            cum_pct = cum_pct + pct
+            print '(I8,I12,F9.2,A1,F9.2,A1)', ugap(i), ucnt(i), pct, "%", cum_pct, "%"
+        end do
+        pct = 100.0_dp * real(max_gap_cnt, dp) / real(n_gaps, dp)
+        print '(A,I0,A,I0,A,F6.2,A)', &
+            "Largest gap: ", max_gap_val, " s  count: ", max_gap_cnt, "  fraction: ", pct, "%"
+        deallocate(ugap, ucnt)
+    end subroutine print_time_gap_table
+
     subroutine print_summary_table(sums)
         type(file_summary_t), intent(in) :: sums(:)
         character(len=512) :: base
@@ -279,5 +339,44 @@ contains
         end do
         print '(A)', repeat("-", col + 105)
     end subroutine print_summary_table
+
+    recursive subroutine qsort_int_pair_desc(key, val, lo, hi)
+        integer, intent(inout) :: key(:), val(:)
+        integer, intent(in)    :: lo, hi
+        integer :: pivot, ii, jj, tk, tv
+        if (lo >= hi) return
+        pivot = key((lo + hi) / 2)
+        ii = lo; jj = hi
+        do while (ii <= jj)
+            do while (key(ii) > pivot); ii = ii + 1; end do
+            do while (key(jj) < pivot); jj = jj - 1; end do
+            if (ii <= jj) then
+                tk = key(ii); key(ii) = key(jj); key(jj) = tk
+                tv = val(ii); val(ii) = val(jj); val(jj) = tv
+                ii = ii + 1; jj = jj - 1
+            end if
+        end do
+        if (lo < jj) call qsort_int_pair_desc(key, val, lo, jj)
+        if (ii < hi) call qsort_int_pair_desc(key, val, ii, hi)
+    end subroutine qsort_int_pair_desc
+
+    recursive subroutine qsort_int(a, lo, hi)
+        integer, intent(inout) :: a(:)
+        integer, intent(in)    :: lo, hi
+        integer :: pivot, ii, jj, tmp
+        if (lo >= hi) return
+        pivot = a((lo + hi) / 2)
+        ii = lo; jj = hi
+        do while (ii <= jj)
+            do while (a(ii) < pivot); ii = ii + 1; end do
+            do while (a(jj) > pivot); jj = jj - 1; end do
+            if (ii <= jj) then
+                tmp = a(ii); a(ii) = a(jj); a(jj) = tmp
+                ii = ii + 1; jj = jj - 1
+            end if
+        end do
+        if (lo < jj) call qsort_int(a, lo, jj)
+        if (ii < hi) call qsort_int(a, ii, hi)
+    end subroutine qsort_int
 
 end module intraday_summary_mod
