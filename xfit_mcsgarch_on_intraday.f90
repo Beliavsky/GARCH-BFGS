@@ -9,7 +9,7 @@ module fit_mcsgarch_on_intraday_mod
     use kind_mod, only: dp
     use math_const_mod, only: log_sqrt_2pi, pi
     use date_mod, only: date_label, yyyymmdd
-    use market_data_mod, only: ohlcv_series_t, read_intraday_prices_csv, filter_intraday_session, intraday_bin_ids
+    use market_data_mod, only: ohlcv_series_t, read_intraday_prices_file, filter_intraday_session, intraday_bin_ids
     use garch_mcsgarch_mod, only: mcsgarch_params_t, mcsgarch_fit_result_t, estimate_diurnal_variance, &
                                   mcsgarch_filter, mcsgarch_nagarch_filter, mcsgarch_gjr_filter
     use distributions_mod, only: pdf_fs_skewt
@@ -19,7 +19,7 @@ module fit_mcsgarch_on_intraday_mod
     implicit none
     private
 
-    character(len=*), parameter :: file_pattern = "c:\python\intraday_prices\*.csv"
+    character(len=*), parameter :: file_pattern = "c:\python\databento\data_1min\*.bin" ! "c:\python\intraday_prices\*.csv"
     real(dp), parameter :: min_var = 1.0e-12_dp
     real(dp), parameter :: min_pdf = 1.0e-300_dp
     real(dp), parameter :: persist_max = 0.999_dp
@@ -93,7 +93,7 @@ contains
         gtol = 1.0e-5_dp
 
         call cpu_time(t0)
-        call read_intraday_prices_csv(trim(filename), bars)
+        call read_intraday_prices_file(trim(filename), bars)
         call cpu_time(t1)
         read_sec = t1 - t0
         call filter_intraday_session(bars, regular_bars)
