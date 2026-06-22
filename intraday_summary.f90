@@ -16,6 +16,7 @@ module intraday_summary_mod
     integer, parameter  :: k_extremes = 5
     logical, parameter  :: print_time_gaps = .true.
     integer, parameter  :: max_gap_rows = 10
+    character(len=2), parameter :: tz_name = "ET"
 
     type, public :: bar_t
         character(len=19) :: dt     = ""
@@ -55,9 +56,12 @@ module intraday_summary_mod
         integer                     :: n_extremes  = 0
         type(ret_bar_t)             :: top_ret(k_extremes)
         type(ret_bar_t)             :: bot_ret(k_extremes)
+        integer                     :: start_sec   = 0
+        integer                     :: end_sec     = 0
     end type file_summary_t
 
     public :: scale_ret, k_extremes, print_time_gaps, max_gap_rows
+    public :: tz_name
     public :: compute_intraday_summary
     public :: print_intraday_summary
     public :: print_summary_table
@@ -71,8 +75,9 @@ contains
         type(file_summary_t), intent(out) :: summary
         real(dp), allocatable :: returns(:), tmp_vals(:)
         integer, allocatable  :: bar_idx(:), ord(:)
+        integer, allocatable  :: day_start_s(:), day_end_s(:)
         real(dp) :: bars_per_day, rtmp
-        integer  :: n_obs, n_days, n_ret, ver, i, n_k, j, jj, itmp
+        integer  :: n_obs, n_days, n_ret, ver, i, n_k, j, jj, itmp, day_idx
 
         n_obs = series%nobs()
         n_days = 1
@@ -84,16 +89,24 @@ contains
         end do
 
         allocate(returns(max(n_obs - 1, 1)), bar_idx(max(n_obs - 1, 1)))
+        allocate(day_start_s(n_days), day_end_s(n_days))
         n_ret = 0
+        day_idx = 1
+        day_start_s(1) = local_sec_of_day(series%timestamp(1))
         do i = 2, n_obs
             associate(d => series%timestamp(i)%date, d1 => series%timestamp(i-1)%date)
                 if (d%year == d1%year .and. d%month == d1%month .and. d%day == d1%day) then
                     n_ret = n_ret + 1
                     returns(n_ret) = scale_ret * log(series%close(i) / series%close(i-1))
                     bar_idx(n_ret) = i
+                else
+                    day_end_s(day_idx)   = local_sec_of_day(series%timestamp(i-1))
+                    day_idx              = day_idx + 1
+                    day_start_s(day_idx) = local_sec_of_day(series%timestamp(i))
                 end if
             end associate
         end do
+        day_end_s(n_days) = local_sec_of_day(series%timestamp(n_obs))
         bars_per_day = real(n_ret, dp) / real(n_days, dp)
         if (n_ret > 1) then
             summary%ann_ret = mean(returns(1:n_ret)) * bars_per_day * real(trading_days_per_year, dp)
@@ -144,6 +157,11 @@ contains
             deallocate(ord, tmp_vals)
         end if
         deallocate(bar_idx, returns)
+        call qsort_int(day_start_s, 1, n_days)
+        call qsort_int(day_end_s, 1, n_days)
+        summary%start_sec = mode_from_sorted(day_start_s)
+        summary%end_sec   = mode_from_sorted(day_end_s)
+        deallocate(day_start_s, day_end_s)
 
         if (has_extension(filename, ".bin")) then
             ver = peek_ohlcv_stream_version(filename)
@@ -165,25 +183,17 @@ contains
         summary%close_min   = minval(series%close)
         summary%close_max   = maxval(series%close)
         summary%close_ratio = summary%close_max / summary%close_min
-        write(summary%date_first, '(I4.4,"-",I2.2,"-",I2.2)') &
-            series%timestamp(1)%date%year, series%timestamp(1)%date%month, &
-            series%timestamp(1)%date%day
-        write(summary%date_last, '(I4.4,"-",I2.2,"-",I2.2)') &
-            series%timestamp(n_obs)%date%year, series%timestamp(n_obs)%date%month, &
-            series%timestamp(n_obs)%date%day
         call fill_bar(series, 1, summary%first_bar)
         call fill_bar(series, n_obs, summary%last_bar)
+        summary%date_first = summary%first_bar%dt(1:10)
+        summary%date_last  = summary%last_bar%dt(1:10)
     end subroutine compute_intraday_summary
 
     subroutine fill_bar(series, idx, bar)
         type(ohlcv_series_t), intent(in) :: series
         integer, intent(in)              :: idx
         type(bar_t), intent(out)         :: bar
-
-        write(bar%dt, '(I4.4,"-",I2.2,"-",I2.2,1X,I2.2,":",I2.2,":",I2.2)') &
-            series%timestamp(idx)%date%year, series%timestamp(idx)%date%month, &
-            series%timestamp(idx)%date%day,  series%timestamp(idx)%hour, &
-            series%timestamp(idx)%minute,    series%timestamp(idx)%second
+        call timestamp_to_local_dt(series, idx, bar%dt)
         bar%open   = series%open(idx)
         bar%high   = series%high(idx)
         bar%low    = series%low(idx)
@@ -196,21 +206,106 @@ contains
         integer, intent(in)              :: idx
         real(dp), intent(in)             :: ret_val
         type(ret_bar_t), intent(out)     :: rb
-
-        write(rb%dt0, '(I4.4,"-",I2.2,"-",I2.2,1X,I2.2,":",I2.2,":",I2.2)') &
-            series%timestamp(idx-1)%date%year, series%timestamp(idx-1)%date%month, &
-            series%timestamp(idx-1)%date%day,  series%timestamp(idx-1)%hour, &
-            series%timestamp(idx-1)%minute,    series%timestamp(idx-1)%second
-        write(rb%dt1, '(I4.4,"-",I2.2,"-",I2.2,1X,I2.2,":",I2.2,":",I2.2)') &
-            series%timestamp(idx)%date%year, series%timestamp(idx)%date%month, &
-            series%timestamp(idx)%date%day,  series%timestamp(idx)%hour, &
-            series%timestamp(idx)%minute,    series%timestamp(idx)%second
+        call timestamp_to_local_dt(series, idx-1, rb%dt0)
+        call timestamp_to_local_dt(series, idx,   rb%dt1)
         rb%gap_sec = (series%timestamp(idx)%hour   - series%timestamp(idx-1)%hour)   * 3600 + &
                     (series%timestamp(idx)%minute - series%timestamp(idx-1)%minute) * 60   + &
                     (series%timestamp(idx)%second - series%timestamp(idx-1)%second)
         rb%ret    = ret_val
         rb%volume = series%volume(idx)
     end subroutine fill_ret_bar
+
+    subroutine timestamp_to_local_dt(series, idx, dt_str)
+        type(ohlcv_series_t), intent(in) :: series
+        integer, intent(in)              :: idx
+        character(len=19), intent(out)   :: dt_str
+        integer :: utc_sec, adj_sec, day_delta, yr, mo, dy, hh, mm, ss
+        yr      = series%timestamp(idx)%date%year
+        mo      = series%timestamp(idx)%date%month
+        dy      = series%timestamp(idx)%date%day
+        utc_sec = series%timestamp(idx)%seconds_since_midnight()
+        adj_sec   = utc_sec + local_offset_sec(yr, mo, dy, utc_sec)
+        day_delta = 0
+        if (adj_sec < 0) then
+            day_delta = -1
+            adj_sec   = adj_sec + 86400
+        else if (adj_sec >= 86400) then
+            day_delta = 1
+            adj_sec   = adj_sec - 86400
+        end if
+        hh = adj_sec / 3600
+        mm = mod(adj_sec, 3600) / 60
+        ss = mod(adj_sec, 60)
+        if (day_delta /= 0) call shift_date(yr, mo, dy, day_delta)
+        write(dt_str, '(I4.4,"-",I2.2,"-",I2.2,1X,I2.2,":",I2.2,":",I2.2)') &
+            yr, mo, dy, hh, mm, ss
+    end subroutine timestamp_to_local_dt
+
+    subroutine shift_date(yr, mo, dy, delta)
+        integer, intent(inout) :: yr, mo, dy
+        integer, intent(in)    :: delta
+        integer :: days_in_mo(12)
+        days_in_mo = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+        if (mod(yr, 400) == 0 .or. (mod(yr, 4) == 0 .and. mod(yr, 100) /= 0)) &
+            days_in_mo(2) = 29
+        dy = dy + delta
+        if (dy < 1) then
+            mo = mo - 1
+            if (mo < 1) then; mo = 12; yr = yr - 1; end if
+            dy = days_in_mo(mo)
+        else if (dy > days_in_mo(mo)) then
+            mo = mo + 1
+            if (mo > 12) then; mo = 1; yr = yr + 1; end if
+            dy = 1
+        end if
+    end subroutine shift_date
+
+    integer function local_sec_of_day(ts) result(sec)
+        type(date_time_t), intent(in) :: ts
+        integer :: utc_sec
+        utc_sec = ts%seconds_since_midnight()
+        sec = modulo(utc_sec + local_offset_sec(ts%date%year, ts%date%month, &
+                                                 ts%date%day,  utc_sec), 86400)
+    end function local_sec_of_day
+
+    pure integer function local_offset_sec(yr, mo, dy, utc_sec) result(offset)
+        ! Eastern Time: EDT (UTC-4) from 2nd Sunday March 02:00 EST (07:00 UTC)
+        !               to 1st Sunday November 02:00 EDT (06:00 UTC); EST (UTC-5) otherwise.
+        integer, intent(in) :: yr, mo, dy, utc_sec
+        integer :: d, first_sunday
+        if (mo < 3 .or. mo > 11) then; offset = -18000; return; end if
+        if (mo > 3 .and. mo < 11) then; offset = -14400; return; end if
+        if (mo == 3) then
+            d = day_of_week(yr, 3, 1)
+            first_sunday = 1 + mod(7 - d, 7)
+            if (dy > first_sunday + 7 .or. &
+                (dy == first_sunday + 7 .and. utc_sec >= 7 * 3600)) then
+                offset = -14400
+            else
+                offset = -18000
+            end if
+            return
+        end if
+        ! mo == 11: fall back on 1st Sunday at 02:00 EDT = 06:00 UTC
+        d = day_of_week(yr, 11, 1)
+        first_sunday = 1 + mod(7 - d, 7)
+        if (dy < first_sunday .or. &
+            (dy == first_sunday .and. utc_sec < 6 * 3600)) then
+            offset = -14400
+        else
+            offset = -18000
+        end if
+    end function local_offset_sec
+
+    pure integer function day_of_week(yr, mo, dy) result(dow)
+        ! 0 = Sunday through 6 = Saturday (Tomohiko Sakamoto algorithm)
+        integer, intent(in) :: yr, mo, dy
+        integer, parameter  :: t(12) = [0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4]
+        integer :: y
+        y = yr
+        if (mo < 3) y = y - 1
+        dow = mod(y + y/4 - y/100 + y/400 + t(mo) + dy, 7)
+    end function day_of_week
 
     subroutine print_intraday_summary(s)
         type(file_summary_t), intent(in) :: s
@@ -219,6 +314,7 @@ contains
         print '(A,A)',  "File:            ", trim(s%filename)
         print '(A,A)',  "Format:          ", trim(s%format_str)
         print '(A,I0,A)', "Bar interval:    ", s%bar_sec, " s"
+        print '(A,A)',    "Timezone:        ", tz_name
         print '(A,I0)', "Observations:    ", s%n_obs
         print '(A,I0)', "Days:            ", s%n_days
         print '(A,F10.1)', "Obs/day:         ", real(s%n_obs, dp) / real(s%n_days, dp)
@@ -236,6 +332,10 @@ contains
         print '(A,F8.4)', "Ann ret (intra): ", s%ann_ret
         print '(A,F8.4)', "Ann vol (intra): ", s%ann_vol
         print '(A,F8.4,A,F8.4)', "Ret range:       ", s%min_ret, " to ", s%max_ret
+        print '(A,I2.2,":",I2.2,":",I2.2)', "Start time:      ", &
+            s%start_sec / 3600, mod(s%start_sec, 3600) / 60, mod(s%start_sec, 60)
+        print '(A,I2.2,":",I2.2,":",I2.2)', "End time:        ", &
+            s%end_sec / 3600, mod(s%end_sec, 3600) / 60, mod(s%end_sec, 60)
         if (k_extremes >= 1 .and. s%n_extremes >= 1) then
             print *
             print '(A)', "    From                To                 Gap(s)      Return      Volume"
@@ -312,6 +412,7 @@ contains
     subroutine print_summary_table(sums)
         type(file_summary_t), intent(in) :: sums(:)
         character(len=512) :: base
+        character(len=5) :: stime, etime
         integer :: i, col
 
         col = 8
@@ -320,24 +421,28 @@ contains
         end do
 
         print '(A,I0,A)', "Summary across ", size(sums), " files:"
+        print '(A,A)', "Times in ", tz_name
         print '(A)', ""
-        print '(A)', repeat("-", col + 105)
+        print '(A)', repeat("-", col + 121)
         write(*, '(A)', advance='no') repeat(" ", col - 8) // "Filename"
-        print '(2X,A8,A7,A7,A12,A12,A9,A9,A7,A8,A8,A8,A8)', &
+        print '(2X,A8,A7,A7,A12,A12,A9,A9,A7,A8,A8,A8,A8,A8,A8)', &
             "     Obs", "   Days", "Bar(s)", "   First    ", "    Last    ", &
-            "   ClMin", "   ClMax", "  Ratio", " AnnRet", " AnnVol", " MinRet", " MaxRet"
-        print '(A)', repeat("-", col + 105)
+            "   ClMin", "   ClMax", "  Ratio", " AnnRet", " AnnVol", " MinRet", " MaxRet", &
+            "   Start", "     End"
+        print '(A)', repeat("-", col + 121)
         do i = 1, size(sums)
             base = basename(sums(i)%filename)
+            write(stime, '(I2.2,":",I2.2)') sums(i)%start_sec / 3600, mod(sums(i)%start_sec, 3600) / 60
+            write(etime, '(I2.2,":",I2.2)') sums(i)%end_sec / 3600, mod(sums(i)%end_sec, 3600) / 60
             write(*, '(A)', advance='no') trim(base) // repeat(" ", col - len_trim(base) + 2)
-            print '(I8,I7,I7,2X,A10,2X,A10,2(1X,F8.3),F7.3,4(F8.4))', &
+            print '(I8,I7,I7,2X,A10,2X,A10,2(1X,F8.3),F7.3,4(F8.4),3X,A5,3X,A5)', &
                 sums(i)%n_obs, sums(i)%n_days, sums(i)%bar_sec, &
                 sums(i)%date_first, sums(i)%date_last, &
                 sums(i)%close_min, sums(i)%close_max, &
                 sums(i)%close_ratio, sums(i)%ann_ret, sums(i)%ann_vol, &
-                sums(i)%min_ret, sums(i)%max_ret
+                sums(i)%min_ret, sums(i)%max_ret, stime, etime
         end do
-        print '(A)', repeat("-", col + 105)
+        print '(A)', repeat("-", col + 121)
     end subroutine print_summary_table
 
     recursive subroutine qsort_int_pair_desc(key, val, lo, hi)
@@ -378,5 +483,24 @@ contains
         if (lo < jj) call qsort_int(a, lo, jj)
         if (ii < hi) call qsort_int(a, ii, hi)
     end subroutine qsort_int
+
+    pure integer function mode_from_sorted(arr) result(m)
+        integer, intent(in) :: arr(:)
+        integer :: i, best_cnt, cur_cnt
+        m = arr(1)
+        best_cnt = 1
+        cur_cnt  = 1
+        do i = 2, size(arr)
+            if (arr(i) == arr(i-1)) then
+                cur_cnt = cur_cnt + 1
+                if (cur_cnt > best_cnt) then
+                    best_cnt = cur_cnt
+                    m = arr(i)
+                end if
+            else
+                cur_cnt = 1
+            end if
+        end do
+    end function mode_from_sorted
 
 end module intraday_summary_mod
