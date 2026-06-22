@@ -12,6 +12,7 @@ module date_mod
     public :: valid, date_from_iso, date_from_basic, date_from_yyyymmdd
     public :: yyyymmdd, date_label, day_of_year
     public :: datetime_from_iso
+    public :: timestamp_label, print_program_header
     public :: operator(+), operator(-), operator(==), operator(/=)
     public :: operator(<), operator(<=), operator(>), operator(>=)
 
@@ -421,5 +422,30 @@ contains
         end do
         ok = .true.
     end subroutine parse_uint
+
+    subroutine timestamp_label(label)
+        character(len=*), intent(out) :: label
+        integer :: values(8), hour12
+        character(len=2) :: ampm
+
+        call date_and_time(values=values)
+        hour12 = mod(values(5), 12)
+        if (hour12 == 0) hour12 = 12
+        if (values(5) < 12) then
+            ampm = "AM"
+        else
+            ampm = "PM"
+        end if
+        write(label, '(I4.4,"-",I2.2,"-",I2.2,1X,I2.2,":",I2.2,1X,A)') &
+            values(1), values(2), values(3), hour12, values(6), ampm
+    end subroutine timestamp_label
+
+    subroutine print_program_header(program_file)
+        character(len=*), intent(in) :: program_file
+        character(len=32) :: run_stamp
+
+        call timestamp_label(run_stamp)
+        print '(A)', "Results of program " // trim(program_file) // " at " // trim(run_stamp)
+    end subroutine print_program_header
 
 end module date_mod
