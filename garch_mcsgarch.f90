@@ -61,6 +61,7 @@ module garch_mcsgarch_mod
     public :: mcsgarch_nagarch_filter
     public :: mcsgarch_gjr_filter
     public :: estimate_diurnal_variance
+    public :: mcsgarch_remaining_var
 
 contains
 
@@ -653,5 +654,33 @@ contains
         call random_number(u2)
         random_normal = sqrt(-2.0_dp * log(u1)) * cos(two_pi*u2)
     end function random_normal
+
+    ! Expected remaining-session variance from bar k given current GARCH state q_k.
+    !
+    ! Sums daily_var_d * diurnal_var_future(h) * E[q_{k+h} | F_k] over h = 1 to n_future,
+    ! where E[q_{k+h} | F_k] = q_bar + persist^h * (q_k - q_bar)
+    ! and q_bar = omega / (1 - persist).
+    pure real(dp) function mcsgarch_remaining_var(params, persist, q_k, daily_var_d, diurnal_var_future)
+        type(mcsgarch_params_t), intent(in) :: params
+        real(dp), intent(in) :: persist, q_k, daily_var_d
+        real(dp), intent(in) :: diurnal_var_future(:)
+        integer :: h, n_future
+        real(dp) :: q_bar, q_fcast, ppower
+
+        n_future = size(diurnal_var_future)
+        if (n_future == 0) then
+            mcsgarch_remaining_var = 0.0_dp
+            return
+        end if
+        q_bar = max(params%omega / max(1.0_dp - persist, 1.0e-10_dp), min_var)
+        ppower = 1.0_dp
+        mcsgarch_remaining_var = 0.0_dp
+        do h = 1, n_future
+            ppower = ppower * persist
+            q_fcast = max(q_bar + ppower * (q_k - q_bar), min_var)
+            mcsgarch_remaining_var = mcsgarch_remaining_var + diurnal_var_future(h) * q_fcast
+        end do
+        mcsgarch_remaining_var = daily_var_d * mcsgarch_remaining_var
+    end function mcsgarch_remaining_var
 
 end module garch_mcsgarch_mod
