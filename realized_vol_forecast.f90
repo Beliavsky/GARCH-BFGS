@@ -23,12 +23,78 @@ module realized_vol_forecast_mod
         logical :: converged = .false.
     end type ewma_affine_result_t
 
+    type, public :: affine_variance_result_t
+        real(dp) :: a = 0.0_dp
+        real(dp) :: b = 1.0_dp
+        real(dp) :: loglik = -huge(1.0_dp)
+        integer :: niter = 0
+        logical :: converged = .false.
+    end type affine_variance_result_t
+
+    type, public :: affine2_variance_result_t
+        real(dp) :: a = 0.0_dp
+        real(dp) :: b1 = 1.0_dp
+        real(dp) :: b2 = 1.0_dp
+        real(dp) :: loglik = -huge(1.0_dp)
+        integer :: niter = 0
+        logical :: converged = .false.
+    end type affine2_variance_result_t
+
     type, public :: har_variance_result_t
         real(dp) :: coef(4) = 0.0_dp
         real(dp) :: loglik = -huge(1.0_dp)
         integer :: niter = 0
         logical :: converged = .false.
     end type har_variance_result_t
+
+    type, public :: harx_variance_result_t
+        real(dp) :: coef(5) = 0.0_dp
+        real(dp) :: loglik = -huge(1.0_dp)
+        integer :: niter = 0
+        logical :: converged = .false.
+    end type harx_variance_result_t
+
+    type, public :: harx_lev_variance_result_t
+        real(dp) :: coef(8) = 0.0_dp
+        real(dp) :: loglik = -huge(1.0_dp)
+        integer :: niter = 0
+        logical :: converged = .false.
+    end type harx_lev_variance_result_t
+
+    type, public :: log_har_variance_result_t
+        real(dp) :: coef(4) = 0.0_dp
+        real(dp) :: loglik = -huge(1.0_dp)
+        integer :: niter = 0
+        logical :: converged = .false.
+    end type log_har_variance_result_t
+
+    type, public :: sqrt_har_variance_result_t
+        real(dp) :: coef(4) = 0.0_dp
+        real(dp) :: loglik = -huge(1.0_dp)
+        integer :: niter = 0
+        logical :: converged = .false.
+    end type sqrt_har_variance_result_t
+
+    type, public :: harq_variance_result_t
+        real(dp) :: coef(5) = 0.0_dp
+        real(dp) :: loglik = -huge(1.0_dp)
+        integer :: niter = 0
+        logical :: converged = .false.
+    end type harq_variance_result_t
+
+    type, public :: harj_variance_result_t
+        real(dp) :: coef(7) = 0.0_dp
+        real(dp) :: loglik = -huge(1.0_dp)
+        integer :: niter = 0
+        logical :: converged = .false.
+    end type harj_variance_result_t
+
+    type, public :: harqj_variance_result_t
+        real(dp) :: coef(8) = 0.0_dp
+        real(dp) :: loglik = -huge(1.0_dp)
+        integer :: niter = 0
+        logical :: converged = .false.
+    end type harqj_variance_result_t
 
     type, public :: semivar_har_variance_result_t
         real(dp) :: coef(7) = 0.0_dp
@@ -54,6 +120,13 @@ module realized_vol_forecast_mod
         logical :: converged = .false.
     end type har_negret_variance_result_t
 
+    type, public :: har_lev_variance_result_t
+        real(dp) :: coef(7) = 0.0_dp
+        real(dp) :: loglik = -huge(1.0_dp)
+        integer :: niter = 0
+        logical :: converged = .false.
+    end type har_lev_variance_result_t
+
     type, public :: heavy_variance_result_t
         real(dp) :: omega = 0.0_dp
         real(dp) :: alpha = 0.0_dp
@@ -68,23 +141,43 @@ module realized_vol_forecast_mod
     end type heavy_variance_result_t
 
     real(dp), allocatable, save :: obj_y(:), obj_x(:)
-    real(dp), allocatable, save :: obj_x2(:)
+    real(dp), allocatable, save :: obj_x2(:), obj_x3(:)
     integer, save :: obj_ntrain = 0
     integer, save :: obj_k_lag = 22
     logical, save :: obj_fit_lambda = .false.
     real(dp), save :: obj_fixed_lambda = 0.94_dp
 
     public :: fit_ewma_affine_variance
+    public :: fit_affine_variance
+    public :: fit_affine2_variance
     public :: fit_har_variance
+    public :: fit_harx_variance
+    public :: fit_harx_lev_variance
+    public :: fit_log_har_variance
+    public :: fit_sqrt_har_variance
+    public :: fit_harq_variance
+    public :: fit_harj_variance
+    public :: fit_harqj_variance
     public :: fit_har_negret_variance
+    public :: fit_har_lev_variance
     public :: fit_semivar_har_variance
     public :: fit_midas_variance
     public :: fit_heavy_variance
     public :: har_variance_path
+    public :: harx_variance_path
+    public :: harx_lev_variance_path
+    public :: log_har_variance_path
+    public :: sqrt_har_variance_path
+    public :: harq_variance_path
+    public :: harj_variance_path
+    public :: harqj_variance_path
     public :: har_negret_variance_path
+    public :: har_lev_variance_path
     public :: semivar_har_variance_path
     public :: midas_variance_path
     public :: heavy_variance_path
+    public :: affine_variance_path
+    public :: affine2_variance_path
     public :: ewma_affine_variance_path
     public :: gaussian_variance_loglik
     public :: qlike_loss
@@ -139,6 +232,79 @@ contains
         deallocate(p, grad)
     end subroutine fit_ewma_affine_variance
 
+    subroutine fit_affine_variance(y, x, ntrain, max_iter, gtol, result, h)
+        ! Fit h_t = a + b*x_t by Gaussian likelihood with positive a and b.
+        real(dp), intent(in) :: y(:), x(:), gtol
+        integer, intent(in) :: ntrain, max_iter
+        type(affine_variance_result_t), intent(out) :: result
+        real(dp), intent(out) :: h(:)
+        real(dp) :: p(2), fopt, mean_y2, mean_x
+        integer :: niter
+        logical :: converged
+
+        if (size(y) /= size(x) .or. size(h) /= size(y)) error stop "fit_affine_variance: array sizes differ"
+        if (ntrain < 5 .or. ntrain > size(y)) error stop "fit_affine_variance: invalid ntrain"
+        if (max_iter < 1) error stop "fit_affine_variance: max_iter must be positive"
+        if (allocated(obj_y)) deallocate(obj_y)
+        if (allocated(obj_x)) deallocate(obj_x)
+        allocate(obj_y(size(y)), obj_x(size(x)))
+        obj_y = y
+        obj_x = max(x, min_var)
+        obj_ntrain = ntrain
+
+        mean_y2 = max(sum(y(1:ntrain)**2) / real(ntrain, dp), min_var)
+        mean_x = max(sum(obj_x(1:ntrain)) / real(ntrain, dp), min_var)
+        p(1) = log(0.1_dp*mean_y2)
+        p(2) = log(max(0.9_dp*mean_y2 / mean_x, min_var))
+        call bfgs_minimize(affine_obj, p, 2, max_iter, gtol, fopt, niter, converged)
+        result%a = exp(p(1))
+        result%b = exp(p(2))
+        call affine_variance_path(x, result%a, result%b, h)
+        result%loglik = gaussian_variance_loglik(y(1:ntrain), h(1:ntrain))
+        result%niter = niter
+        result%converged = converged
+    end subroutine fit_affine_variance
+
+    subroutine fit_affine2_variance(y, x1, x2, ntrain, max_iter, gtol, result, h)
+        ! Fit h_t = a + b1*x1_t + b2*x2_t by Gaussian likelihood with positive coefficients.
+        real(dp), intent(in) :: y(:), x1(:), x2(:), gtol
+        integer, intent(in) :: ntrain, max_iter
+        type(affine2_variance_result_t), intent(out) :: result
+        real(dp), intent(out) :: h(:)
+        real(dp) :: p(3), fopt, mean_y2, mean_x1, mean_x2
+        integer :: niter
+        logical :: converged
+
+        if (size(y) /= size(x1) .or. size(y) /= size(x2) .or. size(h) /= size(y)) then
+            error stop "fit_affine2_variance: array sizes differ"
+        end if
+        if (ntrain < 5 .or. ntrain > size(y)) error stop "fit_affine2_variance: invalid ntrain"
+        if (max_iter < 1) error stop "fit_affine2_variance: max_iter must be positive"
+        if (allocated(obj_y)) deallocate(obj_y)
+        if (allocated(obj_x)) deallocate(obj_x)
+        if (allocated(obj_x2)) deallocate(obj_x2)
+        allocate(obj_y(size(y)), obj_x(size(x1)), obj_x2(size(x2)))
+        obj_y = y
+        obj_x = max(x1, min_var)
+        obj_x2 = max(x2, min_var)
+        obj_ntrain = ntrain
+
+        mean_y2 = max(sum(y(1:ntrain)**2) / real(ntrain, dp), min_var)
+        mean_x1 = max(sum(obj_x(1:ntrain)) / real(ntrain, dp), min_var)
+        mean_x2 = max(sum(obj_x2(1:ntrain)) / real(ntrain, dp), min_var)
+        p(1) = log(0.1_dp*mean_y2)
+        p(2) = log(max(0.45_dp*mean_y2 / mean_x1, min_var))
+        p(3) = log(max(0.45_dp*mean_y2 / mean_x2, min_var))
+        call bfgs_minimize(affine2_obj, p, 3, max_iter, gtol, fopt, niter, converged)
+        result%a = exp(p(1))
+        result%b1 = exp(p(2))
+        result%b2 = exp(p(3))
+        call affine2_variance_path(x1, x2, result%a, result%b1, result%b2, h)
+        result%loglik = gaussian_variance_loglik(y(1:ntrain), h(1:ntrain))
+        result%niter = niter
+        result%converged = converged
+    end subroutine fit_affine2_variance
+
     subroutine fit_har_variance(y, x, ntrain, result, h)
         ! Fit h_t = c + b1*x_{t-1} + b5*avg_5(x) + b22*avg_22(x) by OLS on y_t^2.
         real(dp), intent(in) :: y(:), x(:)
@@ -169,6 +335,257 @@ contains
         call har_variance_path(x, result%coef, h)
         result%loglik = gaussian_variance_loglik(y(23:ntrain), h(23:ntrain))
     end subroutine fit_har_variance
+
+    subroutine fit_harx_variance(y, x, x_exog, ntrain, result, h)
+        ! Fit positive-coefficient HAR plus a nonnegative exogenous variance predictor.
+        real(dp), intent(in) :: y(:), x(:), x_exog(:)
+        integer, intent(in) :: ntrain
+        type(harx_variance_result_t), intent(out) :: result
+        real(dp), intent(out) :: h(:)
+        real(dp) :: p(5), fopt, mean_y2, mean_x, mean_exog
+        integer :: niter
+        logical :: converged
+
+        if (size(y) /= size(x) .or. size(y) /= size(x_exog) .or. size(h) /= size(y)) then
+            error stop "fit_harx_variance: array sizes differ"
+        end if
+        if (ntrain < 30 .or. ntrain > size(y)) error stop "fit_harx_variance: invalid ntrain"
+        if (allocated(obj_y)) deallocate(obj_y)
+        if (allocated(obj_x)) deallocate(obj_x)
+        if (allocated(obj_x2)) deallocate(obj_x2)
+        allocate(obj_y(size(y)), obj_x(size(x)), obj_x2(size(x_exog)))
+        obj_y = y
+        obj_x = max(x, min_var)
+        obj_x2 = max(x_exog, min_var)
+        obj_ntrain = ntrain
+
+        mean_y2 = max(sum(y(1:ntrain)**2) / real(ntrain, dp), min_var)
+        mean_x = max(sum(obj_x(1:ntrain)) / real(ntrain, dp), min_var)
+        mean_exog = max(sum(obj_x2(1:ntrain)) / real(ntrain, dp), min_var)
+        p(1) = log(0.20_dp*mean_y2)
+        p(2:4) = log(max(0.20_dp*mean_y2 / mean_x, min_var))
+        p(5) = log(max(0.20_dp*mean_y2 / mean_exog, min_var))
+        call bfgs_minimize(harx_obj, p, 5, 300, 1.0e-5_dp, fopt, niter, converged)
+        result%coef = exp(p)
+        result%niter = niter
+        result%converged = converged
+        call harx_variance_path(x, x_exog, result%coef, h)
+        result%loglik = gaussian_variance_loglik(y(23:ntrain), h(23:ntrain))
+    end subroutine fit_harx_variance
+
+    subroutine fit_harx_lev_variance(y, x, x_exog, ntrain, result, h)
+        ! Fit HAR plus exogenous variance and daily/weekly/monthly negative-return-squared terms.
+        real(dp), intent(in) :: y(:), x(:), x_exog(:)
+        integer, intent(in) :: ntrain
+        type(harx_lev_variance_result_t), intent(out) :: result
+        real(dp), intent(out) :: h(:)
+        real(dp) :: p(8), fopt, mean_y2, mean_x, mean_exog, mean_neg
+        integer :: niter
+        logical :: converged
+
+        if (size(y) /= size(x) .or. size(y) /= size(x_exog) .or. size(h) /= size(y)) then
+            error stop "fit_harx_lev_variance: array sizes differ"
+        end if
+        if (ntrain < 30 .or. ntrain > size(y)) error stop "fit_harx_lev_variance: invalid ntrain"
+        if (allocated(obj_y)) deallocate(obj_y)
+        if (allocated(obj_x)) deallocate(obj_x)
+        if (allocated(obj_x2)) deallocate(obj_x2)
+        allocate(obj_y(size(y)), obj_x(size(x)), obj_x2(size(x_exog)))
+        obj_y = y
+        obj_x = max(x, min_var)
+        obj_x2 = max(x_exog, min_var)
+        obj_ntrain = ntrain
+
+        mean_y2 = max(sum(y(1:ntrain)**2) / real(ntrain, dp), min_var)
+        mean_x = max(sum(obj_x(1:ntrain)) / real(ntrain, dp), min_var)
+        mean_exog = max(sum(obj_x2(1:ntrain)) / real(ntrain, dp), min_var)
+        mean_neg = max(sum(min(y(1:ntrain), 0.0_dp)**2) / real(ntrain, dp), min_var)
+        p(1) = log(0.125_dp*mean_y2)
+        p(2:4) = log(max(0.125_dp*mean_y2 / mean_x, min_var))
+        p(5) = log(max(0.125_dp*mean_y2 / mean_exog, min_var))
+        p(6:8) = log(max(0.125_dp*mean_y2 / mean_neg, min_var))
+        call bfgs_minimize(harx_lev_obj, p, 8, 300, 1.0e-5_dp, fopt, niter, converged)
+        result%coef = exp(p)
+        result%niter = niter
+        result%converged = converged
+        call harx_lev_variance_path(y, x, x_exog, result%coef, h)
+        result%loglik = gaussian_variance_loglik(y(23:ntrain), h(23:ntrain))
+    end subroutine fit_harx_lev_variance
+
+    subroutine fit_log_har_variance(y, x, ntrain, result, h)
+        ! Fit log h_t = c + b1*log(x_{t-1}) + b5*log(avg_5(x)) + b22*log(avg_22(x)).
+        real(dp), intent(in) :: y(:), x(:)
+        integer, intent(in) :: ntrain
+        type(log_har_variance_result_t), intent(out) :: result
+        real(dp), intent(out) :: h(:)
+        real(dp) :: p(4), fopt, mean_y2
+        integer :: niter
+        logical :: converged
+
+        if (size(y) /= size(x) .or. size(h) /= size(y)) error stop "fit_log_har_variance: array sizes differ"
+        if (ntrain < 30 .or. ntrain > size(y)) error stop "fit_log_har_variance: invalid ntrain"
+        if (allocated(obj_y)) deallocate(obj_y)
+        if (allocated(obj_x)) deallocate(obj_x)
+        allocate(obj_y(size(y)), obj_x(size(x)))
+        obj_y = y
+        obj_x = max(x, min_var)
+        obj_ntrain = ntrain
+
+        mean_y2 = max(sum(y(1:ntrain)**2) / real(ntrain, dp), min_var)
+        p = 0.0_dp
+        p(1) = log(mean_y2)
+        call bfgs_minimize(log_har_obj, p, 4, 300, 1.0e-5_dp, fopt, niter, converged)
+        result%coef = p
+        result%niter = niter
+        result%converged = converged
+        call log_har_variance_path(x, result%coef, h)
+        result%loglik = gaussian_variance_loglik(y(23:ntrain), h(23:ntrain))
+    end subroutine fit_log_har_variance
+
+    subroutine fit_sqrt_har_variance(y, x, ntrain, result, h)
+        ! Fit sqrt(h_t) = c + b1*sqrt(x_{t-1}) + b5*sqrt(avg_5(x)) + b22*sqrt(avg_22(x)).
+        real(dp), intent(in) :: y(:), x(:)
+        integer, intent(in) :: ntrain
+        type(sqrt_har_variance_result_t), intent(out) :: result
+        real(dp), intent(out) :: h(:)
+        real(dp) :: p(4), fopt, mean_y2
+        integer :: niter
+        logical :: converged
+
+        if (size(y) /= size(x) .or. size(h) /= size(y)) error stop "fit_sqrt_har_variance: array sizes differ"
+        if (ntrain < 30 .or. ntrain > size(y)) error stop "fit_sqrt_har_variance: invalid ntrain"
+        if (allocated(obj_y)) deallocate(obj_y)
+        if (allocated(obj_x)) deallocate(obj_x)
+        allocate(obj_y(size(y)), obj_x(size(x)))
+        obj_y = y
+        obj_x = max(x, min_var)
+        obj_ntrain = ntrain
+
+        mean_y2 = max(sum(y(1:ntrain)**2) / real(ntrain, dp), min_var)
+        p = 0.0_dp
+        p(1) = sqrt(mean_y2)
+        call bfgs_minimize(sqrt_har_obj, p, 4, 300, 1.0e-5_dp, fopt, niter, converged)
+        result%coef = p
+        result%niter = niter
+        result%converged = converged
+        call sqrt_har_variance_path(x, result%coef, h)
+        result%loglik = gaussian_variance_loglik(y(23:ntrain), h(23:ntrain))
+    end subroutine fit_sqrt_har_variance
+
+    subroutine fit_harq_variance(y, x, rq, ntrain, result, h)
+        ! Fit HARQ with a demeaned sqrt(realized quarticity) interaction on the daily lag.
+        real(dp), intent(in) :: y(:), x(:), rq(:)
+        integer, intent(in) :: ntrain
+        type(harq_variance_result_t), intent(out) :: result
+        real(dp), intent(out) :: h(:)
+        real(dp) :: p(5), fopt, mean_y2, mean_x
+        integer :: niter
+        logical :: converged
+
+        if (size(y) /= size(x) .or. size(y) /= size(rq) .or. size(h) /= size(y)) then
+            error stop "fit_harq_variance: array sizes differ"
+        end if
+        if (ntrain < 30 .or. ntrain > size(y)) error stop "fit_harq_variance: invalid ntrain"
+        if (allocated(obj_y)) deallocate(obj_y)
+        if (allocated(obj_x)) deallocate(obj_x)
+        if (allocated(obj_x2)) deallocate(obj_x2)
+        allocate(obj_y(size(y)), obj_x(size(x)), obj_x2(size(rq)))
+        obj_y = y
+        obj_x = max(x, min_var)
+        obj_x2 = max(rq, min_var)
+        obj_ntrain = ntrain
+
+        mean_y2 = max(sum(y(1:ntrain)**2) / real(ntrain, dp), min_var)
+        mean_x = max(sum(obj_x(1:ntrain)) / real(ntrain, dp), min_var)
+        p(1) = log(0.20_dp*mean_y2)
+        p(2:4) = log(max(0.20_dp*mean_y2 / mean_x, min_var))
+        p(5) = 0.0_dp
+        call bfgs_minimize(harq_obj, p, 5, 300, 1.0e-5_dp, fopt, niter, converged)
+        result%coef(1:4) = exp(p(1:4))
+        result%coef(5) = p(5)
+        result%niter = niter
+        result%converged = converged
+        call harq_variance_path(x, rq, result%coef, ntrain, h)
+        result%loglik = gaussian_variance_loglik(y(23:ntrain), h(23:ntrain))
+    end subroutine fit_harq_variance
+
+    subroutine fit_harj_variance(y, x, jump, ntrain, result, h)
+        ! Fit HARJ with daily, weekly, and monthly realized jump variation terms.
+        real(dp), intent(in) :: y(:), x(:), jump(:)
+        integer, intent(in) :: ntrain
+        type(harj_variance_result_t), intent(out) :: result
+        real(dp), intent(out) :: h(:)
+        real(dp) :: p(7), fopt, mean_y2, mean_x, mean_jump
+        integer :: niter
+        logical :: converged
+
+        if (size(y) /= size(x) .or. size(y) /= size(jump) .or. size(h) /= size(y)) then
+            error stop "fit_harj_variance: array sizes differ"
+        end if
+        if (ntrain < 30 .or. ntrain > size(y)) error stop "fit_harj_variance: invalid ntrain"
+        if (allocated(obj_y)) deallocate(obj_y)
+        if (allocated(obj_x)) deallocate(obj_x)
+        if (allocated(obj_x2)) deallocate(obj_x2)
+        allocate(obj_y(size(y)), obj_x(size(x)), obj_x2(size(jump)))
+        obj_y = y
+        obj_x = max(x, min_var)
+        obj_x2 = max(jump, 0.0_dp)
+        obj_ntrain = ntrain
+
+        mean_y2 = max(sum(y(1:ntrain)**2) / real(ntrain, dp), min_var)
+        mean_x = max(sum(obj_x(1:ntrain)) / real(ntrain, dp), min_var)
+        mean_jump = max(sum(obj_x2(1:ntrain)) / real(ntrain, dp), min_var)
+        p(1) = log(0.15_dp*mean_y2)
+        p(2:4) = log(max(0.20_dp*mean_y2 / mean_x, min_var))
+        p(5:7) = log(max(0.05_dp*mean_y2 / mean_jump, min_var))
+        call bfgs_minimize(harj_obj, p, 7, 300, 1.0e-5_dp, fopt, niter, converged)
+        result%coef = exp(p)
+        result%niter = niter
+        result%converged = converged
+        call harj_variance_path(x, jump, result%coef, h)
+        result%loglik = gaussian_variance_loglik(y(23:ntrain), h(23:ntrain))
+    end subroutine fit_harj_variance
+
+    subroutine fit_harqj_variance(y, x, rq, jump, ntrain, result, h)
+        ! Fit HARQJ with HAR, jump, and quarticity interaction terms.
+        real(dp), intent(in) :: y(:), x(:), rq(:), jump(:)
+        integer, intent(in) :: ntrain
+        type(harqj_variance_result_t), intent(out) :: result
+        real(dp), intent(out) :: h(:)
+        real(dp) :: p(8), fopt, mean_y2, mean_x, mean_jump
+        integer :: niter
+        logical :: converged
+
+        if (size(y) /= size(x) .or. size(y) /= size(rq) .or. size(y) /= size(jump) .or. size(h) /= size(y)) then
+            error stop "fit_harqj_variance: array sizes differ"
+        end if
+        if (ntrain < 30 .or. ntrain > size(y)) error stop "fit_harqj_variance: invalid ntrain"
+        if (allocated(obj_y)) deallocate(obj_y)
+        if (allocated(obj_x)) deallocate(obj_x)
+        if (allocated(obj_x2)) deallocate(obj_x2)
+        if (allocated(obj_x3)) deallocate(obj_x3)
+        allocate(obj_y(size(y)), obj_x(size(x)), obj_x2(size(rq)), obj_x3(size(jump)))
+        obj_y = y
+        obj_x = max(x, min_var)
+        obj_x2 = max(rq, min_var)
+        obj_x3 = max(jump, 0.0_dp)
+        obj_ntrain = ntrain
+
+        mean_y2 = max(sum(y(1:ntrain)**2) / real(ntrain, dp), min_var)
+        mean_x = max(sum(obj_x(1:ntrain)) / real(ntrain, dp), min_var)
+        mean_jump = max(sum(obj_x3(1:ntrain)) / real(ntrain, dp), min_var)
+        p(1) = log(0.15_dp*mean_y2)
+        p(2:4) = log(max(0.20_dp*mean_y2 / mean_x, min_var))
+        p(5:7) = log(max(0.05_dp*mean_y2 / mean_jump, min_var))
+        p(8) = 0.0_dp
+        call bfgs_minimize(harqj_obj, p, 8, 300, 1.0e-5_dp, fopt, niter, converged)
+        result%coef(1:7) = exp(p(1:7))
+        result%coef(8) = p(8)
+        result%niter = niter
+        result%converged = converged
+        call harqj_variance_path(x, rq, jump, result%coef, ntrain, h)
+        result%loglik = gaussian_variance_loglik(y(23:ntrain), h(23:ntrain))
+    end subroutine fit_harqj_variance
 
     subroutine fit_har_negret_variance(y, x, ntrain, result, h)
         ! Fit positive HAR plus lagged negative-return-squared term.
@@ -201,6 +618,39 @@ contains
         call har_negret_variance_path(y, x, result%coef, h)
         result%loglik = gaussian_variance_loglik(y(23:ntrain), h(23:ntrain))
     end subroutine fit_har_negret_variance
+
+    subroutine fit_har_lev_variance(y, x, ntrain, result, h)
+        ! Fit HAR plus daily, weekly, and monthly negative-return-squared leverage terms.
+        real(dp), intent(in) :: y(:), x(:)
+        integer, intent(in) :: ntrain
+        type(har_lev_variance_result_t), intent(out) :: result
+        real(dp), intent(out) :: h(:)
+        real(dp) :: p(7), fopt, mean_y2, mean_x, mean_neg
+        integer :: niter
+        logical :: converged
+
+        if (size(y) /= size(x) .or. size(h) /= size(y)) error stop "fit_har_lev_variance: array sizes differ"
+        if (ntrain < 30 .or. ntrain > size(y)) error stop "fit_har_lev_variance: invalid ntrain"
+        if (allocated(obj_y)) deallocate(obj_y)
+        if (allocated(obj_x)) deallocate(obj_x)
+        allocate(obj_y(size(y)), obj_x(size(x)))
+        obj_y = y
+        obj_x = max(x, min_var)
+        obj_ntrain = ntrain
+
+        mean_y2 = max(sum(y(1:ntrain)**2) / real(ntrain, dp), min_var)
+        mean_x = max(sum(obj_x(1:ntrain)) / real(ntrain, dp), min_var)
+        mean_neg = max(sum(min(y(1:ntrain), 0.0_dp)**2) / real(ntrain, dp), min_var)
+        p(1) = log(0.15_dp*mean_y2)
+        p(2:4) = log(max(0.15_dp*mean_y2 / mean_x, min_var))
+        p(5:7) = log(max(0.15_dp*mean_y2 / mean_neg, min_var))
+        call bfgs_minimize(har_lev_obj, p, 7, 300, 1.0e-5_dp, fopt, niter, converged)
+        result%coef = exp(p)
+        result%niter = niter
+        result%converged = converged
+        call har_lev_variance_path(y, x, result%coef, h)
+        result%loglik = gaussian_variance_loglik(y(23:ntrain), h(23:ntrain))
+    end subroutine fit_har_lev_variance
 
     subroutine fit_semivar_har_variance(y, x_pos, x_neg, ntrain, result, h)
         ! Fit positive-coefficient HAR using separate positive and negative semivariance predictors.
@@ -330,6 +780,132 @@ contains
         end do
     end subroutine har_variance_path
 
+    subroutine harx_variance_path(x, x_exog, coef, h)
+        ! Compute HAR forecasts plus an exogenous variance predictor known at forecast time.
+        real(dp), intent(in) :: x(:), x_exog(:), coef(5)
+        real(dp), intent(out) :: h(:)
+        real(dp) :: row(5), fallback
+        integer :: t
+
+        if (size(x) /= size(x_exog) .or. size(x) /= size(h)) error stop "harx_variance_path: array sizes differ"
+        fallback = max(sum(max(x, min_var)) / real(size(x), dp), min_var)
+        h(1:min(22, size(h))) = fallback
+        do t = 23, size(x)
+            call harx_row(x, x_exog, t, row)
+            h(t) = max(sum(coef*row), min_var)
+        end do
+    end subroutine harx_variance_path
+
+    subroutine harx_lev_variance_path(y, x, x_exog, coef, h)
+        ! Compute HARX forecasts plus daily/weekly/monthly negative-return-squared terms.
+        real(dp), intent(in) :: y(:), x(:), x_exog(:), coef(8)
+        real(dp), intent(out) :: h(:)
+        real(dp) :: row(8), fallback
+        integer :: t
+
+        if (size(y) /= size(x) .or. size(y) /= size(x_exog) .or. size(y) /= size(h)) then
+            error stop "harx_lev_variance_path: array sizes differ"
+        end if
+        fallback = max(sum(max(x, min_var)) / real(size(x), dp), min_var)
+        h(1:min(22, size(h))) = fallback
+        do t = 23, size(x)
+            call harx_lev_row(y, x, x_exog, t, row)
+            h(t) = max(sum(coef*row), min_var)
+        end do
+    end subroutine harx_lev_variance_path
+
+    subroutine log_har_variance_path(x, coef, h)
+        ! Compute log-HAR variance forecasts from a realized variance measure.
+        real(dp), intent(in) :: x(:), coef(4)
+        real(dp), intent(out) :: h(:)
+        real(dp) :: row(4), fallback, logh
+        integer :: t
+
+        if (size(x) /= size(h)) error stop "log_har_variance_path: array sizes differ"
+        fallback = max(sum(max(x, min_var)) / real(size(x), dp), min_var)
+        h(1:min(22, size(h))) = fallback
+        do t = 23, size(x)
+            call log_har_row(x, t, row)
+            logh = sum(coef*row)
+            h(t) = max(exp(min(max(logh, log(min_var)), 50.0_dp)), min_var)
+        end do
+    end subroutine log_har_variance_path
+
+    subroutine sqrt_har_variance_path(x, coef, h)
+        ! Compute sqrt-HAR variance forecasts from a realized variance measure.
+        real(dp), intent(in) :: x(:), coef(4)
+        real(dp), intent(out) :: h(:)
+        real(dp) :: row(4), fallback, vol
+        integer :: t
+
+        if (size(x) /= size(h)) error stop "sqrt_har_variance_path: array sizes differ"
+        fallback = max(sum(max(x, min_var)) / real(size(x), dp), min_var)
+        h(1:min(22, size(h))) = fallback
+        do t = 23, size(x)
+            call sqrt_har_row(x, t, row)
+            vol = sum(coef*row)
+            h(t) = max(vol**2, min_var)
+        end do
+    end subroutine sqrt_har_variance_path
+
+    subroutine harq_variance_path(x, rq, coef, ninit, h)
+        ! Compute HARQ forecasts with a one-day quarticity interaction term.
+        real(dp), intent(in) :: x(:), rq(:), coef(5)
+        integer, intent(in) :: ninit
+        real(dp), intent(out) :: h(:)
+        real(dp) :: row(4), fallback, rq_center, rq_term
+        integer :: t
+
+        if (size(x) /= size(rq) .or. size(x) /= size(h)) error stop "harq_variance_path: array sizes differ"
+        if (ninit < 23 .or. ninit > size(x)) error stop "harq_variance_path: invalid ninit"
+        fallback = max(sum(max(x, min_var)) / real(size(x), dp), min_var)
+        rq_center = sqrt(max(sum(max(rq(1:ninit), min_var)) / real(ninit, dp), min_var))
+        h(1:min(22, size(h))) = fallback
+        do t = 23, size(x)
+            call har_row(x, t, row)
+            rq_term = (sqrt(max(rq(t - 1), min_var)) - rq_center) * row(2)
+            h(t) = max(sum(coef(1:4)*row) + coef(5)*rq_term, min_var)
+        end do
+    end subroutine harq_variance_path
+
+    subroutine harj_variance_path(x, jump, coef, h)
+        ! Compute HARJ forecasts from HAR variance terms plus realized jump variation.
+        real(dp), intent(in) :: x(:), jump(:), coef(7)
+        real(dp), intent(out) :: h(:)
+        real(dp) :: row(7), fallback
+        integer :: t
+
+        if (size(x) /= size(jump) .or. size(x) /= size(h)) error stop "harj_variance_path: array sizes differ"
+        fallback = max(sum(max(x, min_var)) / real(size(x), dp), min_var)
+        h(1:min(22, size(h))) = fallback
+        do t = 23, size(x)
+            call harj_row(x, jump, t, row)
+            h(t) = max(sum(coef*row), min_var)
+        end do
+    end subroutine harj_variance_path
+
+    subroutine harqj_variance_path(x, rq, jump, coef, ninit, h)
+        ! Compute HARQJ forecasts from HAR, jump, and quarticity interaction terms.
+        real(dp), intent(in) :: x(:), rq(:), jump(:), coef(8)
+        integer, intent(in) :: ninit
+        real(dp), intent(out) :: h(:)
+        real(dp) :: row(7), fallback, rq_center, rq_term
+        integer :: t
+
+        if (size(x) /= size(rq) .or. size(x) /= size(jump) .or. size(x) /= size(h)) then
+            error stop "harqj_variance_path: array sizes differ"
+        end if
+        if (ninit < 23 .or. ninit > size(x)) error stop "harqj_variance_path: invalid ninit"
+        fallback = max(sum(max(x, min_var)) / real(size(x), dp), min_var)
+        rq_center = sqrt(max(sum(max(rq(1:ninit), min_var)) / real(ninit, dp), min_var))
+        h(1:min(22, size(h))) = fallback
+        do t = 23, size(x)
+            call harj_row(x, jump, t, row)
+            rq_term = (sqrt(max(rq(t - 1), min_var)) - rq_center) * row(2)
+            h(t) = max(sum(coef(1:7)*row) + coef(8)*rq_term, min_var)
+        end do
+    end subroutine harqj_variance_path
+
     subroutine har_negret_variance_path(y, x, coef, h)
         ! Compute HAR variance forecasts plus lagged negative daily return squared.
         real(dp), intent(in) :: y(:), x(:), coef(5)
@@ -346,6 +922,22 @@ contains
             h(t) = max(sum(coef(1:4)*row) + coef(5)*negsq, min_var)
         end do
     end subroutine har_negret_variance_path
+
+    subroutine har_lev_variance_path(y, x, coef, h)
+        ! Compute HAR forecasts plus daily/weekly/monthly negative-return-squared terms.
+        real(dp), intent(in) :: y(:), x(:), coef(7)
+        real(dp), intent(out) :: h(:)
+        real(dp) :: row(7), fallback
+        integer :: t
+
+        if (size(y) /= size(x) .or. size(y) /= size(h)) error stop "har_lev_variance_path: array sizes differ"
+        fallback = max(sum(max(x, min_var)) / real(size(x), dp), min_var)
+        h(1:min(22, size(h))) = fallback
+        do t = 23, size(x)
+            call har_lev_row(y, x, t, row)
+            h(t) = max(sum(coef*row), min_var)
+        end do
+    end subroutine har_lev_variance_path
 
     subroutine semivar_har_variance_path(x_pos, x_neg, coef, h)
         ! Compute semivariance-HAR variance forecasts.
@@ -404,6 +996,24 @@ contains
             h(t) = max(omega + alpha*max(x(t - 1), min_var) + beta*h(t - 1), min_var)
         end do
     end subroutine heavy_variance_path
+
+    subroutine affine_variance_path(x, a, b, h)
+        ! Compute h_t = a + b*x_t.
+        real(dp), intent(in) :: x(:), a, b
+        real(dp), intent(out) :: h(:)
+
+        if (size(x) /= size(h)) error stop "affine_variance_path: array sizes differ"
+        h = max(a + b*max(x, min_var), min_var)
+    end subroutine affine_variance_path
+
+    subroutine affine2_variance_path(x1, x2, a, b1, b2, h)
+        ! Compute h_t = a + b1*x1_t + b2*x2_t.
+        real(dp), intent(in) :: x1(:), x2(:), a, b1, b2
+        real(dp), intent(out) :: h(:)
+
+        if (size(x1) /= size(x2) .or. size(x1) /= size(h)) error stop "affine2_variance_path: array sizes differ"
+        h = max(a + b1*max(x1, min_var) + b2*max(x2, min_var), min_var)
+    end subroutine affine2_variance_path
 
     subroutine ewma_affine_variance_path(x, lambda, a, b, ninit, h)
         ! Compute h_t = a + b*EWMA(x_{t-1}) using mean x(1:ninit) as startup.
@@ -468,6 +1078,22 @@ contains
         deallocate(pp, pm)
     end subroutine ewma_affine_obj
 
+    subroutine affine_obj(p, np, f, g)
+        integer, intent(in) :: np
+        real(dp), intent(in) :: p(np)
+        real(dp), intent(out) :: f, g(np)
+
+        call finite_diff_obj(affine_nll, p, np, f, g)
+    end subroutine affine_obj
+
+    subroutine affine2_obj(p, np, f, g)
+        integer, intent(in) :: np
+        real(dp), intent(in) :: p(np)
+        real(dp), intent(out) :: f, g(np)
+
+        call finite_diff_obj(affine2_nll, p, np, f, g)
+    end subroutine affine2_obj
+
     subroutine har_obj(p, np, f, g)
         integer, intent(in) :: np
         real(dp), intent(in) :: p(np)
@@ -491,6 +1117,62 @@ contains
         deallocate(pp, pm)
     end subroutine har_obj
 
+    subroutine harx_obj(p, np, f, g)
+        integer, intent(in) :: np
+        real(dp), intent(in) :: p(np)
+        real(dp), intent(out) :: f, g(np)
+
+        call finite_diff_obj(harx_nll, p, np, f, g)
+    end subroutine harx_obj
+
+    subroutine harx_lev_obj(p, np, f, g)
+        integer, intent(in) :: np
+        real(dp), intent(in) :: p(np)
+        real(dp), intent(out) :: f, g(np)
+
+        call finite_diff_obj(harx_lev_nll, p, np, f, g)
+    end subroutine harx_lev_obj
+
+    subroutine log_har_obj(p, np, f, g)
+        integer, intent(in) :: np
+        real(dp), intent(in) :: p(np)
+        real(dp), intent(out) :: f, g(np)
+
+        call finite_diff_obj(log_har_nll, p, np, f, g)
+    end subroutine log_har_obj
+
+    subroutine sqrt_har_obj(p, np, f, g)
+        integer, intent(in) :: np
+        real(dp), intent(in) :: p(np)
+        real(dp), intent(out) :: f, g(np)
+
+        call finite_diff_obj(sqrt_har_nll, p, np, f, g)
+    end subroutine sqrt_har_obj
+
+    subroutine harq_obj(p, np, f, g)
+        integer, intent(in) :: np
+        real(dp), intent(in) :: p(np)
+        real(dp), intent(out) :: f, g(np)
+
+        call finite_diff_obj(harq_nll, p, np, f, g)
+    end subroutine harq_obj
+
+    subroutine harj_obj(p, np, f, g)
+        integer, intent(in) :: np
+        real(dp), intent(in) :: p(np)
+        real(dp), intent(out) :: f, g(np)
+
+        call finite_diff_obj(harj_nll, p, np, f, g)
+    end subroutine harj_obj
+
+    subroutine harqj_obj(p, np, f, g)
+        integer, intent(in) :: np
+        real(dp), intent(in) :: p(np)
+        real(dp), intent(out) :: f, g(np)
+
+        call finite_diff_obj(harqj_nll, p, np, f, g)
+    end subroutine harqj_obj
+
     subroutine har_negret_obj(p, np, f, g)
         integer, intent(in) :: np
         real(dp), intent(in) :: p(np)
@@ -513,6 +1195,14 @@ contains
         end do
         deallocate(pp, pm)
     end subroutine har_negret_obj
+
+    subroutine har_lev_obj(p, np, f, g)
+        integer, intent(in) :: np
+        real(dp), intent(in) :: p(np)
+        real(dp), intent(out) :: f, g(np)
+
+        call finite_diff_obj(har_lev_nll, p, np, f, g)
+    end subroutine har_lev_obj
 
     subroutine semivar_har_obj(p, np, f, g)
         integer, intent(in) :: np
@@ -589,6 +1279,96 @@ contains
         deallocate(h)
     end function har_nll
 
+    real(dp) function harx_nll(p)
+        real(dp), intent(in) :: p(:)
+        real(dp), allocatable :: h(:)
+        real(dp) :: coef(5)
+
+        coef = exp(p)
+        allocate(h(size(obj_y)))
+        call harx_variance_path(obj_x, obj_x2, coef, h)
+        harx_nll = -gaussian_variance_loglik(obj_y(23:obj_ntrain), h(23:obj_ntrain)) / real(obj_ntrain - 22, dp)
+        if (harx_nll /= harx_nll .or. harx_nll > 1.0e29_dp) harx_nll = 1.0e30_dp
+        deallocate(h)
+    end function harx_nll
+
+    real(dp) function harx_lev_nll(p)
+        real(dp), intent(in) :: p(:)
+        real(dp), allocatable :: h(:)
+        real(dp) :: coef(8)
+
+        coef = exp(p)
+        allocate(h(size(obj_y)))
+        call harx_lev_variance_path(obj_y, obj_x, obj_x2, coef, h)
+        harx_lev_nll = -gaussian_variance_loglik(obj_y(23:obj_ntrain), h(23:obj_ntrain)) / &
+                       real(obj_ntrain - 22, dp)
+        if (harx_lev_nll /= harx_lev_nll .or. harx_lev_nll > 1.0e29_dp) harx_lev_nll = 1.0e30_dp
+        deallocate(h)
+    end function harx_lev_nll
+
+    real(dp) function log_har_nll(p)
+        real(dp), intent(in) :: p(:)
+        real(dp), allocatable :: h(:)
+
+        allocate(h(size(obj_y)))
+        call log_har_variance_path(obj_x, p(1:4), h)
+        log_har_nll = -gaussian_variance_loglik(obj_y(23:obj_ntrain), h(23:obj_ntrain)) / real(obj_ntrain - 22, dp)
+        if (log_har_nll /= log_har_nll .or. log_har_nll > 1.0e29_dp) log_har_nll = 1.0e30_dp
+        deallocate(h)
+    end function log_har_nll
+
+    real(dp) function sqrt_har_nll(p)
+        real(dp), intent(in) :: p(:)
+        real(dp), allocatable :: h(:)
+
+        allocate(h(size(obj_y)))
+        call sqrt_har_variance_path(obj_x, p(1:4), h)
+        sqrt_har_nll = -gaussian_variance_loglik(obj_y(23:obj_ntrain), h(23:obj_ntrain)) / real(obj_ntrain - 22, dp)
+        if (sqrt_har_nll /= sqrt_har_nll .or. sqrt_har_nll > 1.0e29_dp) sqrt_har_nll = 1.0e30_dp
+        deallocate(h)
+    end function sqrt_har_nll
+
+    real(dp) function harq_nll(p)
+        real(dp), intent(in) :: p(:)
+        real(dp), allocatable :: h(:)
+        real(dp) :: coef(5)
+
+        coef(1:4) = exp(p(1:4))
+        coef(5) = p(5)
+        allocate(h(size(obj_y)))
+        call harq_variance_path(obj_x, obj_x2, coef, obj_ntrain, h)
+        harq_nll = -gaussian_variance_loglik(obj_y(23:obj_ntrain), h(23:obj_ntrain)) / real(obj_ntrain - 22, dp)
+        if (harq_nll /= harq_nll .or. harq_nll > 1.0e29_dp) harq_nll = 1.0e30_dp
+        deallocate(h)
+    end function harq_nll
+
+    real(dp) function harj_nll(p)
+        real(dp), intent(in) :: p(:)
+        real(dp), allocatable :: h(:)
+        real(dp) :: coef(7)
+
+        coef = exp(p)
+        allocate(h(size(obj_y)))
+        call harj_variance_path(obj_x, obj_x2, coef, h)
+        harj_nll = -gaussian_variance_loglik(obj_y(23:obj_ntrain), h(23:obj_ntrain)) / real(obj_ntrain - 22, dp)
+        if (harj_nll /= harj_nll .or. harj_nll > 1.0e29_dp) harj_nll = 1.0e30_dp
+        deallocate(h)
+    end function harj_nll
+
+    real(dp) function harqj_nll(p)
+        real(dp), intent(in) :: p(:)
+        real(dp), allocatable :: h(:)
+        real(dp) :: coef(8)
+
+        coef(1:7) = exp(p(1:7))
+        coef(8) = p(8)
+        allocate(h(size(obj_y)))
+        call harqj_variance_path(obj_x, obj_x2, obj_x3, coef, obj_ntrain, h)
+        harqj_nll = -gaussian_variance_loglik(obj_y(23:obj_ntrain), h(23:obj_ntrain)) / real(obj_ntrain - 22, dp)
+        if (harqj_nll /= harqj_nll .or. harqj_nll > 1.0e29_dp) harqj_nll = 1.0e30_dp
+        deallocate(h)
+    end function harqj_nll
+
     real(dp) function har_negret_nll(p)
         real(dp), intent(in) :: p(:)
         real(dp), allocatable :: h(:)
@@ -602,6 +1382,20 @@ contains
         if (har_negret_nll /= har_negret_nll .or. har_negret_nll > 1.0e29_dp) har_negret_nll = 1.0e30_dp
         deallocate(h)
     end function har_negret_nll
+
+    real(dp) function har_lev_nll(p)
+        real(dp), intent(in) :: p(:)
+        real(dp), allocatable :: h(:)
+        real(dp) :: coef(7)
+
+        coef = exp(p)
+        allocate(h(size(obj_y)))
+        call har_lev_variance_path(obj_y, obj_x, coef, h)
+        har_lev_nll = -gaussian_variance_loglik(obj_y(23:obj_ntrain), h(23:obj_ntrain)) / &
+                      real(obj_ntrain - 22, dp)
+        if (har_lev_nll /= har_lev_nll .or. har_lev_nll > 1.0e29_dp) har_lev_nll = 1.0e30_dp
+        deallocate(h)
+    end function har_lev_nll
 
     real(dp) function semivar_har_nll(p)
         real(dp), intent(in) :: p(:)
@@ -674,6 +1468,35 @@ contains
         if (ewma_affine_nll /= ewma_affine_nll .or. ewma_affine_nll > 1.0e29_dp) ewma_affine_nll = 1.0e30_dp
         deallocate(h)
     end function ewma_affine_nll
+
+    real(dp) function affine_nll(p)
+        real(dp), intent(in) :: p(:)
+        real(dp), allocatable :: h(:)
+        real(dp) :: a, b
+
+        a = exp(p(1))
+        b = exp(p(2))
+        allocate(h(size(obj_y)))
+        call affine_variance_path(obj_x, a, b, h)
+        affine_nll = -gaussian_variance_loglik(obj_y(1:obj_ntrain), h(1:obj_ntrain)) / real(obj_ntrain, dp)
+        if (affine_nll /= affine_nll .or. affine_nll > 1.0e29_dp) affine_nll = 1.0e30_dp
+        deallocate(h)
+    end function affine_nll
+
+    real(dp) function affine2_nll(p)
+        real(dp), intent(in) :: p(:)
+        real(dp), allocatable :: h(:)
+        real(dp) :: a, b1, b2
+
+        a = exp(p(1))
+        b1 = exp(p(2))
+        b2 = exp(p(3))
+        allocate(h(size(obj_y)))
+        call affine2_variance_path(obj_x, obj_x2, a, b1, b2, h)
+        affine2_nll = -gaussian_variance_loglik(obj_y(1:obj_ntrain), h(1:obj_ntrain)) / real(obj_ntrain, dp)
+        if (affine2_nll /= affine2_nll .or. affine2_nll > 1.0e29_dp) affine2_nll = 1.0e30_dp
+        deallocate(h)
+    end function affine2_nll
 
     real(dp) function heavy_rm_loglik(omega, alpha, beta)
         ! Gaussian quasi-likelihood for the HEAVY realized-measure equation.
@@ -774,6 +1597,82 @@ contains
         row(3) = sum(max(x(t - 5:t - 1), min_var)) / 5.0_dp
         row(4) = sum(max(x(t - 22:t - 1), min_var)) / 22.0_dp
     end subroutine har_row
+
+    pure subroutine harx_row(x, x_exog, t, row)
+        ! Return HAR terms plus exogenous variance x_exog(t), known at forecast time.
+        real(dp), intent(in) :: x(:), x_exog(:)
+        integer, intent(in) :: t
+        real(dp), intent(out) :: row(5)
+
+        call har_row(x, t, row(1:4))
+        row(5) = max(x_exog(t), min_var)
+    end subroutine harx_row
+
+    pure subroutine harx_lev_row(y, x, x_exog, t, row)
+        ! Return HARX terms and daily/weekly/monthly negative-return-squared terms.
+        real(dp), intent(in) :: y(:), x(:), x_exog(:)
+        integer, intent(in) :: t
+        real(dp), intent(out) :: row(8)
+
+        call harx_row(x, x_exog, t, row(1:5))
+        row(6) = min(y(t - 1), 0.0_dp)**2
+        row(7) = sum(min(y(t - 5:t - 1), 0.0_dp)**2) / 5.0_dp
+        row(8) = sum(min(y(t - 22:t - 1), 0.0_dp)**2) / 22.0_dp
+    end subroutine harx_lev_row
+
+    pure subroutine log_har_row(x, t, row)
+        ! Return [1, log(x_{t-1}), log(avg_5(x)), log(avg_22(x))].
+        real(dp), intent(in) :: x(:)
+        integer, intent(in) :: t
+        real(dp), intent(out) :: row(4)
+
+        row(1) = 1.0_dp
+        row(2) = log(max(x(t - 1), min_var))
+        row(3) = log(max(sum(max(x(t - 5:t - 1), min_var)) / 5.0_dp, min_var))
+        row(4) = log(max(sum(max(x(t - 22:t - 1), min_var)) / 22.0_dp, min_var))
+    end subroutine log_har_row
+
+    pure subroutine sqrt_har_row(x, t, row)
+        ! Return [1, sqrt(x_{t-1}), sqrt(avg_5(x)), sqrt(avg_22(x))].
+        real(dp), intent(in) :: x(:)
+        integer, intent(in) :: t
+        real(dp), intent(out) :: row(4)
+
+        row(1) = 1.0_dp
+        row(2) = sqrt(max(x(t - 1), min_var))
+        row(3) = sqrt(max(sum(max(x(t - 5:t - 1), min_var)) / 5.0_dp, min_var))
+        row(4) = sqrt(max(sum(max(x(t - 22:t - 1), min_var)) / 22.0_dp, min_var))
+    end subroutine sqrt_har_row
+
+    pure subroutine harj_row(x, jump, t, row)
+        ! Return intercept, daily/weekly/monthly RV lags, and daily/weekly/monthly jump lags.
+        real(dp), intent(in) :: x(:), jump(:)
+        integer, intent(in) :: t
+        real(dp), intent(out) :: row(7)
+
+        row(1) = 1.0_dp
+        row(2) = max(x(t - 1), min_var)
+        row(3) = sum(max(x(t - 5:t - 1), min_var)) / 5.0_dp
+        row(4) = sum(max(x(t - 22:t - 1), min_var)) / 22.0_dp
+        row(5) = max(jump(t - 1), 0.0_dp)
+        row(6) = sum(max(jump(t - 5:t - 1), 0.0_dp)) / 5.0_dp
+        row(7) = sum(max(jump(t - 22:t - 1), 0.0_dp)) / 22.0_dp
+    end subroutine harj_row
+
+    pure subroutine har_lev_row(y, x, t, row)
+        ! Return HAR terms and daily/weekly/monthly negative-return-squared leverage terms.
+        real(dp), intent(in) :: y(:), x(:)
+        integer, intent(in) :: t
+        real(dp), intent(out) :: row(7)
+
+        row(1) = 1.0_dp
+        row(2) = max(x(t - 1), min_var)
+        row(3) = sum(max(x(t - 5:t - 1), min_var)) / 5.0_dp
+        row(4) = sum(max(x(t - 22:t - 1), min_var)) / 22.0_dp
+        row(5) = min(y(t - 1), 0.0_dp)**2
+        row(6) = sum(min(y(t - 5:t - 1), 0.0_dp)**2) / 5.0_dp
+        row(7) = sum(min(y(t - 22:t - 1), 0.0_dp)**2) / 22.0_dp
+    end subroutine har_lev_row
 
     pure subroutine semivar_har_row(x_pos, x_neg, t, row)
         ! Return intercept plus daily/weekly/monthly positive and negative semivariance lags.
