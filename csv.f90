@@ -14,7 +14,7 @@ module csv_mod
     use strings_mod, only: split_string, uppercase
     implicit none
     private
-    public :: read_price_csv, read_ohlc_csv, log_returns, print_price_sample_info, date_label
+    public :: read_price_csv, read_ohlc_csv, read_numeric_csv, log_returns, print_price_sample_info, date_label
 
 contains
 
@@ -246,6 +246,134 @@ contains
         end do
         close(unit)
     end subroutine read_ohlc_csv
+
+    subroutine read_numeric_csv(filename, row_index, col_names, values, has_header, has_index_col, &
+                                index_min, index_max, max_col, max_rows)
+        ! Read a numeric CSV, optionally using the first column as an integer row index.
+        character(len=*),              intent(in)  :: filename
+        integer,          allocatable, intent(out) :: row_index(:)
+        character(len=32), allocatable, intent(out) :: col_names(:)
+        real(dp),         allocatable, intent(out) :: values(:,:)
+        logical, optional, intent(in) :: has_header, has_index_col
+        integer, optional, intent(in) :: index_min, index_max, max_col, max_rows
+
+        logical :: header, index_col, keep
+        integer :: io, unit, irow, iout, j, nrows, ncols, ntokens, first_data_col, idx
+        integer :: min_idx, max_idx, row_limit
+        character(len=4096) :: line
+        character(:), allocatable :: tokens(:)
+
+        header = .true.
+        index_col = .false.
+        if (present(has_header)) header = has_header
+        if (present(has_index_col)) index_col = has_index_col
+
+        min_idx = -huge(min_idx)
+        max_idx = huge(max_idx)
+        if (present(index_min)) min_idx = index_min
+        if (present(index_max)) max_idx = index_max
+        row_limit = huge(row_limit)
+        if (present(max_rows)) then
+            if (max_rows < 1) then
+                print '(A)', "csv_mod: max_rows must be positive"
+                error stop
+            end if
+            row_limit = max_rows
+        end if
+
+        open(newunit=unit, file=filename, status='old', action='read', iostat=io)
+        if (io /= 0) then
+            print '(A,A)', "csv_mod: cannot open ", trim(filename)
+            error stop
+        end if
+
+        read(unit, '(A)', iostat=io) line
+        if (io /= 0 .or. trim(line) == "") then
+            print '(A)', "csv_mod: empty numeric CSV"
+            error stop
+        end if
+        call split_string(line, ",", tokens)
+        ntokens = size(tokens)
+        first_data_col = 1
+        if (index_col) first_data_col = 2
+        ncols = ntokens - first_data_col + 1
+        if (present(max_col)) then
+            if (max_col < 1) then
+                print '(A)', "csv_mod: max_col must be positive"
+                error stop
+            end if
+            ncols = min(ncols, max_col)
+        end if
+        if (ncols < 1) then
+            print '(A)', "csv_mod: no numeric columns found"
+            error stop
+        end if
+
+        allocate(col_names(ncols))
+        if (header) then
+            do j = 1, ncols
+                col_names(j) = adjustl(tokens(first_data_col + j - 1))
+            end do
+        else
+            do j = 1, ncols
+                write(col_names(j), '(A,I0)') "x", j
+            end do
+            rewind(unit)
+        end if
+
+        nrows = 0
+        irow = 0
+        do
+            read(unit, '(A)', iostat=io) line
+            if (io /= 0 .or. trim(line) == "") exit
+            irow = irow + 1
+            call split_string(line, ",", tokens)
+            if (size(tokens) < first_data_col + ncols - 1) cycle
+            if (index_col) then
+                read(tokens(1), *) idx
+            else
+                idx = irow
+            end if
+            keep = idx >= min_idx .and. idx <= max_idx
+            if (keep) then
+                nrows = nrows + 1
+                if (nrows >= row_limit) exit
+            end if
+        end do
+        if (nrows == 0) then
+            print '(A)', "csv_mod: no numeric rows selected"
+            error stop
+        end if
+
+        allocate(row_index(nrows), values(nrows, ncols))
+        rewind(unit)
+        if (header) read(unit, '(A)')
+
+        irow = 0
+        iout = 0
+        do
+            read(unit, '(A)', iostat=io) line
+            if (io /= 0 .or. trim(line) == "") exit
+            irow = irow + 1
+            call split_string(line, ",", tokens)
+            if (size(tokens) < first_data_col + ncols - 1) cycle
+            if (index_col) then
+                read(tokens(1), *) idx
+            else
+                idx = irow
+            end if
+            keep = idx >= min_idx .and. idx <= max_idx
+            if (.not. keep) cycle
+            iout = iout + 1
+            row_index(iout) = idx
+            do j = 1, ncols
+                read(tokens(first_data_col + j - 1), *) values(iout, j)
+            end do
+            if (iout >= nrows) exit
+        end do
+
+        close(unit)
+    end subroutine read_numeric_csv
 
     ! ------------------------------------------------------------------
     ! Compute log returns: r(i) = log(prices(i+1) / prices(i)).
