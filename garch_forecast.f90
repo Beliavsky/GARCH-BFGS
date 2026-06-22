@@ -23,6 +23,8 @@ module garch_forecast_mod
     private
 
     public :: model_vol_forecast, finalize_return_garch_fit
+    public :: symm_garch_variance_path, nagarch_variance_path, gjr_variance_path, egarch_variance_path
+    public :: riskmetrics_ewma_variance_path
     public :: vol_forecast_stats_t, summarize_vol_forecast, print_vol_forecast_table
 
     type :: vol_forecast_stats_t
@@ -39,6 +41,93 @@ module garch_forecast_mod
     end type vol_forecast_stats_t
 
 contains
+
+    subroutine symm_garch_variance_path(y, params, h)
+        ! Compute h_t = omega + alpha*y_{t-1}^2 + beta*h_{t-1}.
+        real(dp), intent(in) :: y(:)
+        type(garch_params_t), intent(in) :: params
+        real(dp), intent(out) :: h(:)
+        real(dp) :: persist
+        integer :: i
+
+        if (size(y) /= size(h)) error stop "symm_garch_variance_path: array sizes differ"
+        persist = symm_garch_persist(params)
+        h(1) = max(params%omega / max(1.0_dp - persist, 1.0e-8_dp), sum(y**2) / real(size(y), dp))
+        do i = 2, size(y)
+            h(i) = max(params%omega + params%alpha*y(i - 1)**2 + params%beta*h(i - 1), 1.0e-12_dp)
+        end do
+    end subroutine symm_garch_variance_path
+
+    subroutine nagarch_variance_path(y, params, h)
+        ! Compute the NAGARCH conditional variance path.
+        real(dp), intent(in) :: y(:)
+        type(garch_params_t), intent(in) :: params
+        real(dp), intent(out) :: h(:)
+        real(dp) :: persist, sqrth
+        integer :: i
+
+        if (size(y) /= size(h)) error stop "nagarch_variance_path: array sizes differ"
+        persist = nagarch_persist(params)
+        h(1) = max(params%omega / max(1.0_dp - persist, 1.0e-8_dp), sum(y**2) / real(size(y), dp))
+        do i = 2, size(y)
+            sqrth = sqrt(max(h(i - 1), 1.0e-12_dp))
+            h(i) = max(params%omega + params%alpha*(y(i - 1) - params%theta*sqrth)**2 + params%beta*h(i - 1), &
+                       1.0e-12_dp)
+        end do
+    end subroutine nagarch_variance_path
+
+    subroutine gjr_variance_path(y, params, h)
+        ! Compute h_t = omega + (alpha + gamma*I(y_{t-1}<0))*y_{t-1}^2 + beta*h_{t-1}.
+        real(dp), intent(in) :: y(:)
+        type(garch_params_t), intent(in) :: params
+        real(dp), intent(out) :: h(:)
+        real(dp) :: persist, ind
+        integer :: i
+
+        if (size(y) /= size(h)) error stop "gjr_variance_path: array sizes differ"
+        persist = gjr_persist(params)
+        h(1) = max(params%omega / max(1.0_dp - persist, 1.0e-8_dp), sum(y**2) / real(size(y), dp))
+        do i = 2, size(y)
+            ind = merge(1.0_dp, 0.0_dp, y(i - 1) < 0.0_dp)
+            h(i) = max(params%omega + (params%alpha + params%gamma*ind)*y(i - 1)**2 + params%beta*h(i - 1), &
+                       1.0e-12_dp)
+        end do
+    end subroutine gjr_variance_path
+
+    subroutine egarch_variance_path(y, params, h)
+        ! Compute EGARCH h_t with normal E|z| centering.
+        real(dp), intent(in) :: y(:)
+        type(garch_params_t), intent(in) :: params
+        real(dp), intent(out) :: h(:)
+        real(dp) :: lh, z, c_eg
+        integer :: i
+
+        if (size(y) /= size(h)) error stop "egarch_variance_path: array sizes differ"
+        c_eg = sqrt(2.0_dp / acos(-1.0_dp))
+        lh = params%omega / max(1.0_dp - params%beta, 1.0e-8_dp)
+        do i = 1, size(y)
+            h(i) = max(exp(min(max(lh, log(1.0e-12_dp)), 50.0_dp)), 1.0e-12_dp)
+            z = y(i) / sqrt(h(i))
+            lh = params%omega + params%beta*lh + params%alpha*(abs(z) - c_eg) + params%gamma*z
+        end do
+    end subroutine egarch_variance_path
+
+    subroutine riskmetrics_ewma_variance_path(y, lambda, ntrain, h)
+        ! Compute RiskMetrics-style EWMA variance path with supplied lambda.
+        real(dp), intent(in) :: y(:), lambda
+        integer, intent(in) :: ntrain
+        real(dp), intent(out) :: h(:)
+        real(dp) :: lam
+        integer :: i
+
+        if (size(y) /= size(h)) error stop "riskmetrics_ewma_variance_path: array sizes differ"
+        if (ntrain < 1 .or. ntrain > size(y)) error stop "riskmetrics_ewma_variance_path: invalid ntrain"
+        lam = min(max(lambda, 0.0_dp), 0.9999_dp)
+        h(1) = max(sum(y(1:ntrain)**2) / real(ntrain, dp), 1.0e-12_dp)
+        do i = 2, size(y)
+            h(i) = max(lam*h(i - 1) + (1.0_dp - lam)*y(i - 1)**2, 1.0e-12_dp)
+        end do
+    end subroutine riskmetrics_ewma_variance_path
 
     subroutine finalize_return_garch_fit(model_name, y, params, fopt, niter, converged, trading_days, result, &
                                          vol_ann_override, skew_override, ekurt_override)
