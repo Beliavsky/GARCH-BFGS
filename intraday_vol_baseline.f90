@@ -25,6 +25,7 @@ module intraday_vol_baseline_mod
     public :: fit_ewma_diurnal_baseline
     public :: fit_lag1_diurnal_intraday_ewma_baseline
     public :: fit_ewma_diurnal_intraday_ewma_baseline
+    public :: remaining_session_var_diurnal
 
 contains
 
@@ -345,5 +346,37 @@ contains
             error stop caller // ": array sizes differ"
         end if
     end subroutine check_same_size
+
+    ! Expected remaining-session variance at each bar using only the diurnal multiplier.
+    !
+    ! At bar i with bin b, the forecast is daily_var(i) * sum_{j=b+1}^{nbins} diurnal_curve(j).
+    ! This is the GARCH-free baseline: no intraday dynamics, purely time-of-day weighting.
+    subroutine remaining_session_var_diurnal(daily_var, diurnal_var, bin_id, h_remaining)
+        real(dp), intent(in) :: daily_var(:), diurnal_var(:)
+        integer, intent(in) :: bin_id(:)
+        real(dp), intent(out) :: h_remaining(:)
+        real(dp), allocatable :: bin_curve(:), bin_tail_sum(:)
+        integer :: i, b, nbins
+
+        if (size(daily_var) /= size(diurnal_var) .or. size(daily_var) /= size(bin_id) .or. &
+            size(daily_var) /= size(h_remaining)) then
+            error stop "remaining_session_var_diurnal: array sizes differ"
+        end if
+        if (minval(bin_id) < 1) error stop "remaining_session_var_diurnal: bin_id must be positive"
+        nbins = maxval(bin_id)
+        allocate(bin_curve(nbins), bin_tail_sum(nbins))
+        bin_curve = 0.0_dp
+        do i = 1, size(daily_var)
+            bin_curve(bin_id(i)) = diurnal_var(i)
+        end do
+        bin_tail_sum(nbins) = 0.0_dp
+        do b = nbins - 1, 1, -1
+            bin_tail_sum(b) = bin_tail_sum(b + 1) + bin_curve(b + 1)
+        end do
+        do i = 1, size(daily_var)
+            h_remaining(i) = max(daily_var(i) * bin_tail_sum(bin_id(i)), 0.0_dp)
+        end do
+        deallocate(bin_curve, bin_tail_sum)
+    end subroutine remaining_session_var_diurnal
 
 end module intraday_vol_baseline_mod
