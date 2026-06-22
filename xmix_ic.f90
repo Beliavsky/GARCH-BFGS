@@ -1,277 +1,7 @@
-! Module for normal mixture model fitting using EM algorithm
-module normal_mixture_em
-    implicit none
-    private
+! Select the number of normal mixture components using AIC and BIC.
 
-    integer, parameter, public :: dp = kind(1.0d0)
-    real(kind=dp), parameter :: PI = 3.14159265358979323846_dp
-
-    type, public :: normal_mixture_type
-        integer :: n_components
-        real(kind=dp), allocatable :: weights(:)
-        real(kind=dp), allocatable :: means(:)
-        real(kind=dp), allocatable :: stdevs(:)
-    end type normal_mixture_type
-
-    public :: initialize_mixture, fit_mixture, display_parameters
-    public :: generate_mixture_data, normal_pdf, log_likelihood
-    public :: smart_initialize, plot_ic
-
-contains
-
-    subroutine initialize_mixture(mixture, n_components, init_weights, init_means, init_stdevs)
-        type(normal_mixture_type), intent(inout) :: mixture
-        integer, intent(in) :: n_components
-        real(kind=dp), intent(in), optional :: init_weights(:)
-        real(kind=dp), intent(in), optional :: init_means(:)
-        real(kind=dp), intent(in), optional :: init_stdevs(:)
-
-        mixture%n_components = n_components
-
-        if (allocated(mixture%weights)) deallocate(mixture%weights)
-        if (allocated(mixture%means))   deallocate(mixture%means)
-        if (allocated(mixture%stdevs))  deallocate(mixture%stdevs)
-
-        allocate(mixture%weights(n_components))
-        allocate(mixture%means(n_components))
-        allocate(mixture%stdevs(n_components))
-
-        if (present(init_weights)) then
-            mixture%weights = init_weights
-        else
-            mixture%weights = 1.0_dp / n_components
-        end if
-
-        if (present(init_means)) then
-            mixture%means = init_means
-        else
-            mixture%means = 0.0_dp
-        end if
-
-        if (present(init_stdevs)) then
-            mixture%stdevs = init_stdevs
-        else
-            mixture%stdevs = 1.0_dp
-        end if
-    end subroutine initialize_mixture
-
-    pure elemental function normal_pdf(x, mu, sigma) result(pdf_val)
-        real(kind=dp), intent(in) :: x, mu, sigma
-        real(kind=dp) :: pdf_val
-        pdf_val = exp(-0.5_dp * ((x - mu) / sigma)**2) / (sigma * sqrt(2.0_dp * PI))
-    end function normal_pdf
-
-    pure function mixture_pdf(x, mixture) result(pdf_val)
-        real(kind=dp), intent(in) :: x
-        type(normal_mixture_type), intent(in) :: mixture
-        real(kind=dp) :: pdf_val
-        integer :: j
-
-        pdf_val = 0.0_dp
-        do j = 1, mixture%n_components
-            pdf_val = pdf_val + mixture%weights(j) * &
-                      normal_pdf(x, mixture%means(j), mixture%stdevs(j))
-        end do
-    end function mixture_pdf
-
-    pure function log_likelihood(data, mixture) result(loglik)
-        real(kind=dp), intent(in) :: data(:)
-        type(normal_mixture_type), intent(in) :: mixture
-        real(kind=dp) :: loglik
-        real(kind=dp) :: prob
-        integer :: i, n
-
-        n = size(data)
-        loglik = 0.0_dp
-        do i = 1, n
-            prob = mixture_pdf(data(i), mixture)
-            loglik = loglik + log(prob)
-        end do
-    end function log_likelihood
-
-    subroutine fit_mixture(mixture, data, max_iter, tol)
-        type(normal_mixture_type), intent(inout) :: mixture
-        real(kind=dp), intent(in) :: data(:)
-        integer, intent(in) :: max_iter
-        real(kind=dp), intent(in) :: tol
-
-        real(kind=dp), allocatable :: responsibilities(:,:)
-        real(kind=dp) :: old_loglik, new_loglik, diff
-        integer :: n, iter
-
-        n = size(data)
-        allocate(responsibilities(n, mixture%n_components))
-
-        old_loglik = log_likelihood(data, mixture)
-
-        do iter = 1, max_iter
-            call e_step(mixture, data, responsibilities)
-            call m_step(mixture, data, responsibilities)
-            new_loglik = log_likelihood(data, mixture)
-            diff = new_loglik - old_loglik
-            if (abs(diff) < tol) exit
-            old_loglik = new_loglik
-        end do
-    end subroutine fit_mixture
-
-    subroutine smart_initialize(mixture, data)
-        type(normal_mixture_type), intent(inout) :: mixture
-        real(kind=dp), intent(in) :: data(:)
-        real(kind=dp) :: data_min, data_max, step, data_mean, data_var
-        integer :: i, n
-
-        n = size(data)
-        data_min = minval(data)
-        data_max = maxval(data)
-        step = (data_max - data_min) / (mixture%n_components + 1)
-
-        do i = 1, mixture%n_components
-            mixture%means(i) = data_min + i * step
-        end do
-
-        mixture%weights = 1.0_dp / mixture%n_components
-        data_mean = sum(data) / n
-        data_var  = sum((data - data_mean)**2) / n
-        mixture%stdevs = sqrt(data_var)
-    end subroutine smart_initialize
-
-    subroutine e_step(mixture, data, resp)
-        type(normal_mixture_type), intent(in) :: mixture
-        real(kind=dp), intent(in) :: data(:)
-        real(kind=dp), intent(out) :: resp(:,:)
-        real(kind=dp) :: norm_const
-        integer :: i, j, n
-
-        n = size(data)
-        do i = 1, n
-            norm_const = 0.0_dp
-            do j = 1, mixture%n_components
-                resp(i, j) = mixture%weights(j) * &
-                             normal_pdf(data(i), mixture%means(j), mixture%stdevs(j))
-                norm_const = norm_const + resp(i, j)
-            end do
-            if (norm_const > 0.0_dp) then
-                resp(i,:) = resp(i,:) / norm_const
-            else
-                resp(i,:) = 1.0_dp / mixture%n_components
-            end if
-        end do
-    end subroutine e_step
-
-    subroutine m_step(mixture, data, resp)
-        type(normal_mixture_type), intent(inout) :: mixture
-        real(kind=dp), intent(in) :: data(:)
-        real(kind=dp), intent(in) :: resp(:,:)
-        real(kind=dp) :: sum_resp, weighted_sum_sq
-        integer :: j, n
-
-        n = size(data)
-        do j = 1, mixture%n_components
-            sum_resp = sum(resp(:, j))
-            mixture%weights(j) = sum_resp / n
-            if (sum_resp > 0.0_dp) then
-                mixture%means(j) = sum(resp(:, j) * data) / sum_resp
-                weighted_sum_sq   = sum(resp(:, j) * (data - mixture%means(j))**2)
-                mixture%stdevs(j) = sqrt(weighted_sum_sq / sum_resp)
-                if (mixture%stdevs(j) < 1.0e-6_dp) mixture%stdevs(j) = 1.0e-6_dp
-            end if
-        end do
-        mixture%weights = mixture%weights / sum(mixture%weights)
-    end subroutine m_step
-
-    subroutine display_parameters(mixture, title)
-        type(normal_mixture_type), intent(in) :: mixture
-        character(len=*), intent(in), optional :: title
-        integer :: i
-
-        if (present(title)) then
-            print '(A)', trim(title)
-            print '(A)', repeat('-', len_trim(title))
-        end if
-
-        print '(A5,A10,A15,A15)', 'Comp', 'Weight', 'Mean', 'Std Dev'
-        print '(A)', repeat('-', 45)
-        do i = 1, mixture%n_components
-            print '(I5,F10.4,F15.6,F15.6)', i, mixture%weights(i), &
-                  mixture%means(i), mixture%stdevs(i)
-        end do
-        print *, ''
-    end subroutine display_parameters
-
-    subroutine generate_mixture_data(mixture, data)
-        type(normal_mixture_type), intent(in) :: mixture
-        real(kind=dp), intent(out) :: data(:)
-        real(kind=dp) :: u, cumsum, x1, x2, z
-        integer :: i, j, component
-
-        do i = 1, size(data)
-            call random_number(u)
-            cumsum    = 0.0_dp
-            component = mixture%n_components
-            do j = 1, mixture%n_components
-                cumsum = cumsum + mixture%weights(j)
-                if (u <= cumsum) then
-                    component = j
-                    exit
-                end if
-            end do
-            call random_number(x1)
-            call random_number(x2)
-            z = sqrt(-2.0_dp * log(x1)) * cos(2.0_dp * PI * x2)
-            data(i) = mixture%means(component) + mixture%stdevs(component) * z
-        end do
-    end subroutine generate_mixture_data
-
-    ! Text-based bar plot of an information criterion vs number of components
-    subroutine plot_ic(ic_values, k_max, best_k, label)
-        real(dp),         intent(in) :: ic_values(:)
-        integer,          intent(in) :: k_max, best_k
-        character(len=*), intent(in) :: label
-
-        integer,  parameter :: PLOT_WIDTH = 50   ! columns for the bar area
-
-        real(dp) :: ic_min, ic_max, ic_range, frac
-        integer  :: k, bar_len
-        character(len=PLOT_WIDTH) :: bar
-        character(len=1) :: marker
-
-        ic_min   = minval(ic_values(1:k_max))
-        ic_max   = maxval(ic_values(1:k_max))
-        ic_range = ic_max - ic_min
-        if (ic_range < 1.0_dp) ic_range = 1.0_dp   ! guard against flat data
-
-        print '(A)', ""
-        print '(A)', " " // trim(label) // " vs Number of Components"
-        print '(A)', " (shorter bar = lower " // trim(label) // " = better fit;  * = best k)"
-        print '(A)', ""
-
-        do k = 1, k_max
-            frac    = (ic_values(k) - ic_min) / ic_range   ! 0 = best, 1 = worst
-            bar_len = nint(frac * PLOT_WIDTH)
-            if (bar_len < 1) bar_len = 1
-            bar = repeat('#', bar_len) // repeat(' ', PLOT_WIDTH - bar_len)
-
-            if (k == best_k) then
-                marker = '*'
-            else
-                marker = ' '
-            end if
-
-            print '(A1,I2,A3,A,A,F12.2)', marker, k, ' | ', bar(1:bar_len), ' ', ic_values(k)
-        end do
-
-        ! x-axis
-        print '(A)', "   +-" // repeat('-', PLOT_WIDTH)
-        print '(A)', "     min " // trim(label) // &
-                     repeat(' ', PLOT_WIDTH - 9 - len_trim(label)) // "max " // trim(label)
-        print '(A)', ""
-    end subroutine plot_ic
-
-end module normal_mixture_em
-
-! Main program: for each true k in K_SIM_MIN..K_SIM_MAX, simulate data and
-! select best fitting k via AIC and BIC over models with 1..K_MAX components.
 program xmix_ic
+    use date_mod, only: print_program_header
     use normal_mixture_em, only: dp, normal_mixture_type, initialize_mixture, &
                                  fit_mixture, display_parameters, &
                                  generate_mixture_data, log_likelihood, &
@@ -279,7 +9,7 @@ program xmix_ic
     implicit none
 
     ! ---- tuneable parameters ----
-    integer,  parameter :: n_samples  = 10**3   ! number of observations
+    integer,  parameter :: n_samples  = 10**3    ! number of observations
     integer,  parameter :: K_MAX      = 6        ! maximum components to try
     integer,  parameter :: K_SIM_MIN  = 1        ! smallest true model to simulate
     integer,  parameter :: K_SIM_MAX  = 4        ! largest true model to simulate
@@ -297,6 +27,7 @@ program xmix_ic
     integer, allocatable :: seed(:)
 
     ! ---- random seed ----
+    call print_program_header("xmix_ic.f90")
     call random_seed(size=seed_size)
     allocate(seed(seed_size))
     seed = 123456789
@@ -402,7 +133,7 @@ program xmix_ic
             call fit_mixture(est_mix, data, max_iter, tol)
             call display_parameters(est_mix, "Estimated Parameters (best BIC model)")
         else
-            print '(A)', " (AIC and BIC agree on best k — parameters shown above)"
+            print '(A)', " (AIC and BIC agree on best k ??? parameters shown above)"
             print '(A)', ""
         end if
 
