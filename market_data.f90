@@ -3,7 +3,8 @@
 module market_data_mod
     use iso_fortran_env, only: int64
     use kind_mod, only: dp
-    use date_mod, only: date_t, date_time_t, datetime_from_iso, seconds_per_minute, seconds_per_hour, yyyymmdd
+    use date_mod, only: date_t, date_time_t, date_from_iso, datetime_from_iso, seconds_per_minute, seconds_per_hour, yyyymmdd
+    use path_utils_mod, only: has_extension
     use strings_mod, only: split_string, uppercase
     implicit none
     private
@@ -14,6 +15,7 @@ module market_data_mod
     real(dp), parameter :: default_price_tick_size = 0.001_dp
     character(len=*), parameter :: ohlcv_tick_stream_magic = "OHLCVTICKSTREAM"
     integer, parameter :: ohlcv_tick_stream_version = 1
+    integer, parameter :: ohlcv_dp_stream_version = 2
 
     type, public :: ohlcv_series_t
         type(date_time_t), allocatable :: timestamp(:)
@@ -40,7 +42,11 @@ module market_data_mod
     end type ohlcv_tick_series_t
 
     public :: read_intraday_prices_csv
+    public :: read_intraday_prices_csv_auto
+    public :: read_intraday_prices_file
+    public :: read_continuous_intraday_prices_csv
     public :: intraday_bin_ids
+    public :: infer_bar_interval_seconds
     public :: resample_ohlcv_series
     public :: check_prices_on_penny_grid
     public :: filter_intraday_session
@@ -50,6 +56,11 @@ module market_data_mod
     public :: convert_tick_to_ohlcv_series
     public :: write_ohlcv_tick_stream
     public :: read_ohlcv_tick_stream
+    public :: write_ohlcv_dp_stream
+    public :: read_ohlcv_dp_stream
+    public :: peek_ohlcv_stream_version
+    public :: ohlcv_tick_stream_version
+    public :: ohlcv_dp_stream_version
     public :: equal_ohlcv_tick_series
     public :: default_bar_minutes
     public :: default_session_start_seconds, default_session_end_seconds
@@ -122,6 +133,111 @@ contains
         close(unit)
     end subroutine read_intraday_prices_csv
 
+    ! Read either headered OHLCV CSV or headerless continuous futures CSV.
+    subroutine read_intraday_prices_csv_auto(filename, series, max_obs)
+        character(len=*), intent(in) :: filename
+        type(ohlcv_series_t), intent(out) :: series
+        integer, intent(in), optional :: max_obs
+        integer :: io, unit
+        character(len=4096) :: line
+        character(:), allocatable :: tokens(:)
+
+        open(newunit=unit, file=filename, status='old', action='read', iostat=io)
+        if (io /= 0) then
+            print '(A,A)', "market_data_mod: cannot open ", trim(filename)
+            error stop
+        end if
+        read(unit, '(A)', iostat=io) line
+        close(unit)
+        if (io /= 0) error stop "read_intraday_prices_csv_auto: empty file"
+        call split_string(line, ",", tokens)
+        if (size(tokens) >= 7 .and. yyyymmdd(date_from_iso(tokens(1))) > 0) then
+            call read_continuous_intraday_prices_csv(filename, series, max_obs)
+        else
+            call read_intraday_prices_csv(filename, series, max_obs)
+        end if
+    end subroutine read_intraday_prices_csv_auto
+
+    ! Read intraday OHLCV from CSV or compact unformatted stream based on suffix.
+    ! Binary files are auto-detected as v1 (tick) or v2 (dp) by the version field.
+    subroutine read_intraday_prices_file(filename, series)
+        character(len=*), intent(in) :: filename
+        type(ohlcv_series_t), intent(out) :: series
+
+        if (has_extension(filename, ".bin")) then
+            if (peek_ohlcv_stream_version(filename) == ohlcv_dp_stream_version) then
+                call read_ohlcv_dp_stream(filename, series)
+            else
+                block
+                    type(ohlcv_tick_series_t) :: tick_series
+                    call read_ohlcv_tick_stream(filename, tick_series)
+                    call convert_tick_to_ohlcv_series(tick_series, series)
+                end block
+            end if
+        else
+            call read_intraday_prices_csv_auto(filename, series)
+        end if
+    end subroutine read_intraday_prices_file
+
+
+    ! Read headerless continuous futures bars: date,time,open,high,low,close,volume,symbol.
+    subroutine read_continuous_intraday_prices_csv(filename, series, max_obs)
+        character(len=*), intent(in) :: filename
+        type(ohlcv_series_t), intent(out) :: series
+        integer, intent(in), optional :: max_obs
+        integer :: io, unit, nrows, i, data_limit
+        character(len=4096) :: line
+        character(:), allocatable :: tokens(:)
+
+        data_limit = huge(1)
+        if (present(max_obs)) then
+            if (max_obs < 1) error stop "read_continuous_intraday_prices_csv: max_obs must be positive"
+            data_limit = max_obs
+        end if
+
+        open(newunit=unit, file=filename, status='old', action='read', iostat=io)
+        if (io /= 0) then
+            print '(A,A)', "market_data_mod: cannot open ", trim(filename)
+            error stop
+        end if
+
+        nrows = 0
+        do
+            read(unit, '(A)', iostat=io) line
+            if (io /= 0) exit
+            if (trim(line) == "") cycle
+            nrows = nrows + 1
+            if (nrows >= data_limit) exit
+        end do
+        if (nrows < 1) error stop "read_continuous_intraday_prices_csv: no data rows"
+
+        allocate(series%timestamp(nrows), series%open(nrows), series%high(nrows), &
+                 series%low(nrows), series%close(nrows), series%volume(nrows))
+
+        rewind(unit)
+        i = 0
+        do
+            read(unit, '(A)', iostat=io) line
+            if (io /= 0) exit
+            if (trim(line) == "") cycle
+            i = i + 1
+            call split_string(line, ",", tokens)
+            if (size(tokens) < 7) error stop "read_continuous_intraday_prices_csv: short data row"
+            series%timestamp(i)%date = date_from_iso(tokens(1))
+            if (yyyymmdd(series%timestamp(i)%date) == 0) then
+                error stop "read_continuous_intraday_prices_csv: invalid date"
+            end if
+            call set_time_from_hhmmss(tokens(2), series%timestamp(i))
+            read(tokens(3), *) series%open(i)
+            read(tokens(4), *) series%high(i)
+            read(tokens(5), *) series%low(i)
+            read(tokens(6), *) series%close(i)
+            read(tokens(7), *) series%volume(i)
+            if (i >= nrows) exit
+        end do
+        close(unit)
+    end subroutine read_continuous_intraday_prices_csv
+
     pure subroutine intraday_bin_ids(series, bin_id, session_start_seconds, interval_seconds)
         type(ohlcv_series_t), intent(in) :: series
         integer, allocatable, intent(out) :: bin_id(:)
@@ -139,6 +255,23 @@ contains
             bin_id(i) = (sec - start_sec) / step_sec + 1
         end do
     end subroutine intraday_bin_ids
+
+    ! Infer the bar interval as the minimum positive same-day gap across all timestamps.
+    ! Using the minimum (not the first gap found) correctly handles missing bars,
+    ! which create gaps that are multiples of the true interval.
+    pure integer function infer_bar_interval_seconds(series) result(interval_seconds)
+        type(ohlcv_series_t), intent(in) :: series
+        integer :: i, s0, s1
+
+        interval_seconds = default_bar_minutes * seconds_per_minute
+        do i = 2, series%nobs()
+            if (yyyymmdd(series%timestamp(i)%date) == yyyymmdd(series%timestamp(i - 1)%date)) then
+                s0 = series%timestamp(i - 1)%seconds_since_midnight()
+                s1 = series%timestamp(i)%seconds_since_midnight()
+                if (s1 > s0) interval_seconds = min(interval_seconds, s1 - s0)
+            end if
+        end do
+    end function infer_bar_interval_seconds
 
     ! Aggregate OHLCV bars from source_seconds to a lower frequency target_seconds.
     subroutine resample_ohlcv_series(series, resampled, source_seconds, target_seconds, session_start_seconds)
@@ -540,6 +673,26 @@ contains
         timestamp%second = mod(seconds, seconds_per_minute)
     end subroutine set_time_from_seconds
 
+    subroutine set_time_from_hhmmss(s, timestamp)
+        character(len=*), intent(in) :: s
+        type(date_time_t), intent(inout) :: timestamp
+        character(len=len(s)) :: t
+        integer :: hh, mm, ss
+
+        t = adjustl(s)
+        if (len_trim(t) < 5) error stop "set_time_from_hhmmss: time too short"
+        read(t(1:2), *) hh
+        read(t(4:5), *) mm
+        ss = 0
+        if (len_trim(t) >= 8) read(t(7:8), *) ss
+        if (hh < 0 .or. hh > 23 .or. mm < 0 .or. mm > 59 .or. ss < 0 .or. ss > 59) then
+            error stop "set_time_from_hhmmss: invalid time"
+        end if
+        timestamp%hour = hh
+        timestamp%minute = mm
+        timestamp%second = ss
+    end subroutine set_time_from_hhmmss
+
 
     pure integer function find_col(names, target)
         character(len=*), intent(in) :: names(:), target
@@ -557,5 +710,111 @@ contains
             if (find_col_any > 0) return
         end do
     end function find_col_any
+
+    ! Read only the version integer from a binary OHLCV stream without loading data.
+    integer function peek_ohlcv_stream_version(filename)
+        character(len=*), intent(in) :: filename
+        integer :: io, unit, version
+        character(len=16) :: magic
+
+        open(newunit=unit, file=filename, access='stream', form='unformatted', &
+             status='old', action='read', iostat=io)
+        if (io /= 0) error stop "peek_ohlcv_stream_version: cannot open file"
+        read(unit, iostat=io) magic
+        if (io /= 0 .or. trim(magic) /= ohlcv_tick_stream_magic) &
+            error stop "peek_ohlcv_stream_version: invalid file magic"
+        read(unit) version
+        close(unit)
+        peek_ohlcv_stream_version = version
+    end function peek_ohlcv_stream_version
+
+    ! Save an ohlcv_series_t directly as real(dp) (version 2), no tick_size needed.
+    subroutine write_ohlcv_dp_stream(filename, series)
+        character(len=*), intent(in) :: filename
+        type(ohlcv_series_t), intent(in) :: series
+        integer :: io, unit, n, i
+        integer, allocatable :: year(:), month(:), day(:), seconds(:)
+        character(len=16) :: magic
+
+        n = series%nobs()
+        if (n < 1) error stop "write_ohlcv_dp_stream: empty input series"
+        magic = ohlcv_tick_stream_magic
+        allocate(year(n), month(n), day(n), seconds(n))
+        do i = 1, n
+            year(i) = series%timestamp(i)%date%year
+            month(i) = series%timestamp(i)%date%month
+            day(i) = series%timestamp(i)%date%day
+            seconds(i) = series%timestamp(i)%seconds_since_midnight()
+        end do
+
+        open(newunit=unit, file=filename, access='stream', form='unformatted', &
+             status='replace', action='write', iostat=io)
+        if (io /= 0) then
+            print '(A,A)', "write_ohlcv_dp_stream: cannot open ", trim(filename)
+            error stop
+        end if
+
+        write(unit) magic
+        write(unit) ohlcv_dp_stream_version
+        write(unit) n
+        write(unit) year
+        write(unit) month
+        write(unit) day
+        write(unit) seconds
+        write(unit) series%open
+        write(unit) series%high
+        write(unit) series%low
+        write(unit) series%close
+        write(unit) series%volume
+        close(unit)
+        deallocate(year, month, day, seconds)
+    end subroutine write_ohlcv_dp_stream
+
+    ! Read a double-precision OHLCV series written by write_ohlcv_dp_stream.
+    subroutine read_ohlcv_dp_stream(filename, series)
+        character(len=*), intent(in) :: filename
+        type(ohlcv_series_t), intent(out) :: series
+        integer :: io, unit, version, n, i
+        integer, allocatable :: year(:), month(:), day(:), seconds(:)
+        character(len=16) :: magic
+
+        open(newunit=unit, file=filename, access='stream', form='unformatted', &
+             status='old', action='read', iostat=io)
+        if (io /= 0) then
+            print '(A,A)', "read_ohlcv_dp_stream: cannot open ", trim(filename)
+            error stop
+        end if
+
+        read(unit, iostat=io) magic
+        if (io /= 0 .or. trim(magic) /= ohlcv_tick_stream_magic) &
+            error stop "read_ohlcv_dp_stream: invalid file magic"
+        read(unit) version
+        if (version /= ohlcv_dp_stream_version) &
+            error stop "read_ohlcv_dp_stream: unsupported file version"
+        read(unit) n
+        if (n < 1) error stop "read_ohlcv_dp_stream: invalid observation count"
+
+        allocate(year(n), month(n), day(n), seconds(n))
+        allocate(series%timestamp(n), series%open(n), series%high(n), &
+                 series%low(n), series%close(n), series%volume(n))
+        read(unit) year
+        read(unit) month
+        read(unit) day
+        read(unit) seconds
+        read(unit) series%open
+        read(unit) series%high
+        read(unit) series%low
+        read(unit) series%close
+        read(unit) series%volume
+        close(unit)
+
+        do i = 1, n
+            series%timestamp(i)%date%year = year(i)
+            series%timestamp(i)%date%month = month(i)
+            series%timestamp(i)%date%day = day(i)
+            call set_time_from_seconds(series%timestamp(i), seconds(i))
+        end do
+        deallocate(year, month, day, seconds)
+    end subroutine read_ohlcv_dp_stream
 
 end module market_data_mod
