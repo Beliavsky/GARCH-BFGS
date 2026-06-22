@@ -42,18 +42,30 @@ module garch_fit_dist_mod
 
 contains
 
-    subroutine fit_garch_dist_model(model_name, dist_name, y, max_iter, gtol, result)
+    subroutine fit_garch_dist_model(model_name, dist_name, y, max_iter, gtol, result, &
+                                    start_params, start_shape, start_shape2)
         character(len=*), intent(in) :: model_name, dist_name
         real(dp), intent(in) :: y(:), gtol
         integer, intent(in) :: max_iter
         type(garch_dist_fit_result_t), intent(out) :: result
-        type(garch_params_t) :: start_params
+        type(garch_params_t), intent(in), optional :: start_params
+        real(dp), intent(in), optional :: start_shape, start_shape2
+        type(garch_params_t) :: params0
+        real(dp) :: shape0, shape20
         real(dp), allocatable :: p(:), grad(:)
         real(dp) :: f_best
         integer :: niter
         logical :: converged
 
-        call initial_params(model_name, y, max_iter, gtol, start_params)
+        if (present(start_params)) then
+            params0 = start_params
+        else
+            call initial_params(model_name, y, max_iter, gtol, params0)
+        end if
+        shape0 = default_shape(dist_id_from_name(dist_name))
+        shape20 = default_shape2(dist_id_from_name(dist_name))
+        if (present(start_shape)) shape0 = start_shape
+        if (present(start_shape2)) shape20 = start_shape2
         obj_model = canonical_model(model_name)
         obj_dist = dist_id_from_name(dist_name)
         obj_np = model_npar(obj_model) + dist_nshape(obj_dist)
@@ -62,7 +74,7 @@ contains
         obj_y = y
         allocate(p(obj_np), grad(obj_np))
 
-        call pack_params(obj_model, obj_dist, start_params, default_shape(obj_dist), default_shape2(obj_dist), p)
+        call pack_params(obj_model, obj_dist, params0, shape0, shape20, p)
         call bfgs_minimize(dist_obj, p, obj_np, max_iter, gtol, f_best, niter, converged)
         call unpack_params(obj_model, obj_dist, p, result%params, result%shape, result%shape2)
         call dist_obj(p, obj_np, result%nll, grad)
