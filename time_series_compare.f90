@@ -5,7 +5,7 @@ module time_series_compare_mod
     use strings_mod, only: uppercase
     implicit none
     private
-    public :: transform_series, lag_series_one, aligned_corr, is_change_transform
+    public :: transform_series, lag_series_one, aligned_index_pairs, aligned_corr, is_change_transform
 
 contains
 
@@ -70,6 +70,46 @@ contains
         call move_alloc(lagged_dates, series_dates)
         call move_alloc(lagged_values, series_values)
     end subroutine lag_series_one
+
+    subroutine aligned_index_pairs(left_dates, right_dates, left_idx, right_idx)
+        ! Return index pairs where sorted date arrays have matching dates.
+        integer, intent(in) :: left_dates(:), right_dates(:)
+        integer, allocatable, intent(out) :: left_idx(:), right_idx(:)
+        integer :: i, j, nmatch
+
+        nmatch = 0
+        i = 1
+        j = 1
+        do while (i <= size(left_dates) .and. j <= size(right_dates))
+            if (left_dates(i) == right_dates(j)) then
+                nmatch = nmatch + 1
+                i = i + 1
+                j = j + 1
+            else if (left_dates(i) < right_dates(j)) then
+                i = i + 1
+            else
+                j = j + 1
+            end if
+        end do
+
+        allocate(left_idx(nmatch), right_idx(nmatch))
+        nmatch = 0
+        i = 1
+        j = 1
+        do while (i <= size(left_dates) .and. j <= size(right_dates))
+            if (left_dates(i) == right_dates(j)) then
+                nmatch = nmatch + 1
+                left_idx(nmatch) = i
+                right_idx(nmatch) = j
+                i = i + 1
+                j = j + 1
+            else if (left_dates(i) < right_dates(j)) then
+                i = i + 1
+            else
+                j = j + 1
+            end if
+        end do
+    end subroutine aligned_index_pairs
 
     subroutine aligned_corr(xindex, x, yindex, y, corr, nmatch, first_index, last_index)
         integer, intent(in) :: xindex(:), yindex(:)
