@@ -36,7 +36,8 @@
 module random_mod
     use kind_mod,          only: dp
     use math_const_mod,    only: pi, two_pi, sqrt2, sqrt3
-    use distributions_mod, only: ged_lambda
+    use distributions_mod, only: ged_lambda, dist_normal, dist_t, dist_ged, dist_logistic, &
+                                 dist_laplace, dist_sech, dist_nig_sym, dist_nig_gen, dist_fs_skewt
     implicit none
     private
 
@@ -52,6 +53,7 @@ module random_mod
     public :: random_fs_skewt
     public :: random_vg_sym
     public :: random_vg
+    public :: random_dist_std
 
     interface random_normal
         module procedure random_normal_0
@@ -126,6 +128,41 @@ module random_mod
     end interface
 
 contains
+
+    function random_dist_std(dist_id, shape, shape2) result(x)
+        ! Draw one standardized variate from a supported distribution id.
+        integer, intent(in) :: dist_id
+        real(dp), intent(in), optional :: shape, shape2
+        real(dp) :: x, s1, s2
+
+        s1 = 0.0_dp
+        s2 = 0.0_dp
+        if (present(shape)) s1 = shape
+        if (present(shape2)) s2 = shape2
+
+        select case (dist_id)
+        case (dist_normal)
+            x = random_normal_0()
+        case (dist_t)
+            x = random_t_std_0(s1)
+        case (dist_ged)
+            x = random_ged_std_0(s1)
+        case (dist_logistic)
+            x = random_logistic_std_0()
+        case (dist_laplace)
+            x = random_laplace_std_0()
+        case (dist_sech)
+            x = random_sech_0()
+        case (dist_nig_sym)
+            x = random_nig_sym_0(s1)
+        case (dist_nig_gen)
+            x = random_nig_0(s1, s1*s2)
+        case (dist_fs_skewt)
+            x = random_fs_skewt_0(s1, s2)
+        case default
+            error stop "random_dist_std: unsupported distribution"
+        end select
+    end function random_dist_std
 
     ! ── Normal ────────────────────────────────────────────────────────────────
 
