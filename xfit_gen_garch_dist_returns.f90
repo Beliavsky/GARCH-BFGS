@@ -5,6 +5,7 @@
 !   xfit_gen_garch_dist_returns.exe [prices_file] [output_csv]
 
 program xfit_gen_garch_dist_returns
+    use date_mod, only: print_program_header
     use kind_mod, only: dp
     use csv_mod, only: read_price_csv, print_price_sample_info
     use stats_mod, only: mean, sd, variance
@@ -17,9 +18,9 @@ program xfit_gen_garch_dist_returns
     integer, parameter :: max_assets = 3, max_iter = 100
     real(dp), parameter :: gtol = 1.0e-7_dp
     character(len=16), parameter :: models(*) = [character(len=16) :: &
-        "SYMM_GARCH", "NAGARCH"] ! , "GJR_GARCH", "GJR_SIGNED", "EGARCH", "QGARCH"]
+        "SYMM_GARCH", "NAGARCH", "CNAGARCH"] ! , "GJR_GARCH", "GJR_SIGNED", "EGARCH", "QGARCH"]
     character(len=10), parameter :: dists(*) = [character(len=10) :: &
-        "NORMAL", "T", "SECH", "GED", "LAPLACE", "LOGISTIC", "NIG", "FS_SKEWT"]
+        "NORMAL", "T", "T6.0"] ! "SECH", "GED", "LAPLACE", "LOGISTIC", "NIG", "FS_SKEWT"]
     integer, parameter :: n_model = size(models)
     integer, parameter :: n_dist = size(dists)
     integer, parameter :: n_combo = n_model*n_dist
@@ -36,17 +37,19 @@ program xfit_gen_garch_dist_returns
     real(dp) :: fit_seconds(n_model,n_dist)
     integer :: nprices, ncols, nobs, icol, imod, idist, ifit, jfit, nfit
     integer :: nparam, clock_start, clock_end, clock_rate, fit_clock_start, fit_clock_end
-    integer :: csv_unit
+    integer :: csv_unit, cnag_unit
     real(dp) :: ret_mean, ret_std, elapsed_s, logl, aic, bic, vol_ann
     real(dp) :: row_aic(n_combo), row_bic(n_combo), row_logl(n_combo), row_vol_ann(n_combo), row_fit_sec(n_combo)
     character(len=256) :: prices_file, output_csv
-    logical :: write_csv
+    logical :: write_csv, write_cnag_csv
 
+    call print_program_header("xfit_gen_garch_dist_returns.f90")
     prices_file = default_prices_file
     output_csv = ""
     if (command_argument_count() >= 1) call get_command_argument(1, prices_file)
     if (command_argument_count() >= 2) call get_command_argument(2, output_csv)
-    write_csv = len_trim(output_csv) > 0
+    write_csv      = len_trim(output_csv) > 0
+    write_cnag_csv = any(models == "CNAGARCH")
 
     call system_clock(clock_start, clock_rate)
     aic_wins = 0
@@ -56,7 +59,7 @@ program xfit_gen_garch_dist_returns
     rank_count = 0
     fit_seconds = 0.0_dp
     print*,"max_assets =",max_assets
-    call read_price_csv(trim(prices_file), dates, col_names, prices, max_col=max_assets)
+    call read_price_csv(prices_file, dates, col_names, prices, max_col=max_assets)
     nprices = size(prices, 1)
     ncols = size(prices, 2)
     nobs = nprices - 1
@@ -67,10 +70,14 @@ program xfit_gen_garch_dist_returns
     asset_converged_count = 0
     asset_iter_total = 0
 
-    call print_price_sample_info(trim(prices_file), dates, ncols)
+    call print_price_sample_info(prices_file, dates, ncols)
     if (write_csv) then
         open(newunit=csv_unit, file=trim(output_csv), status="replace", action="write")
         write(csv_unit,'(A)') "model,dist,asset,omega,alpha,gamma,beta,theta,nu,xi,dist_alpha,persist,vol_ann_pct,logL,AIC,BIC,iter,conv,AIC_rank,BIC_rank,fit_sec"
+    end if
+    if (write_cnag_csv) then
+        open(newunit=cnag_unit, file="cnagarch_dist_params.csv", status="replace", action="write")
+        write(cnag_unit,'(A)') "model,dist,asset,omega,alpha,beta,rho,phi,theta,t_persist,shape1,shape2,logL,AIC,BIC,iter,conv"
     end if
     write(*,'(A)') "Model            Dist       Asset        omega   alpha   gamma    beta   theta      nu      xi  dist_alpha  persist  vol_ann%        logL         AIC         BIC  iter conv AIC_rank BIC_rank    fit_sec"
     write(*,'(A)') repeat("-", 197)
@@ -88,7 +95,7 @@ program xfit_gen_garch_dist_returns
                 row_dist_idx(nfit) = idist
 
                 call system_clock(fit_clock_start)
-                call fit_garch_dist_model(trim(models(imod)), trim(dists(idist)), ret, max_iter, gtol, rows(nfit))
+                call fit_garch_dist_model(models(imod), dists(idist), ret, max_iter, gtol, rows(nfit))
                 call system_clock(fit_clock_end)
                 row_fit_sec(nfit) = real(fit_clock_end - fit_clock_start, dp) / real(clock_rate, dp)
                 fit_seconds(imod,idist) = fit_seconds(imod,idist) + &
@@ -146,11 +153,25 @@ program xfit_gen_garch_dist_returns
                     row_logl(ifit), row_aic(ifit), row_bic(ifit), rows(ifit)%niter, rows(ifit)%converged, &
                     row_aic_rank(ifit), row_bic_rank(ifit), row_fit_sec(ifit)
             end if
+            if (write_cnag_csv .and. trim(rows(ifit)%model) == "CNAGARCH") then
+                write(cnag_unit,'(A,",",A,",",A,",",ES16.8,11(",",ES16.8),",",I0,",",L1)') &
+                    trim(rows(ifit)%model), trim(rows(ifit)%dist), trim(col_names(icol)), &
+                    rows(ifit)%params%omega, rows(ifit)%params%alpha, rows(ifit)%params%beta, &
+                    rows(ifit)%params%extra1, rows(ifit)%params%extra2, rows(ifit)%params%theta, &
+                    rows(ifit)%params%alpha*(1.0_dp + rows(ifit)%params%theta**2) + rows(ifit)%params%beta, &
+                    rows(ifit)%shape, rows(ifit)%shape2, &
+                    row_logl(ifit), row_aic(ifit), row_bic(ifit), &
+                    rows(ifit)%niter, rows(ifit)%converged
+            end if
         end do
     end do
     if (write_csv) then
         close(csv_unit)
         write(*,'(/,A,A)') "Wrote fit table CSV: ", trim(output_csv)
+    end if
+    if (write_cnag_csv) then
+        close(cnag_unit)
+        write(*,'(/,A)') "Wrote CNAGARCH parameter CSV: cnagarch_dist_params.csv"
     end if
     call print_asset_time_summary(col_names, asset_fit_seconds, asset_converged_count, asset_iter_total)
     call print_combo_summary(aic_wins, bic_wins, aic_rank_sum, bic_rank_sum, rank_count, fit_seconds)

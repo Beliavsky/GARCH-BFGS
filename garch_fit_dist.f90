@@ -16,6 +16,7 @@ module garch_fit_dist_mod
     integer, parameter :: dist_logistic = 6
     integer, parameter :: dist_nig = 7
     integer, parameter :: dist_fs_skewt = 8
+    integer, parameter :: dist_t_fixed  = 9    ! Student-t with nu fixed (not optimised)
     real(dp), parameter :: min_h = 1.0e-12_dp
     real(dp), parameter :: min_pdf = 1.0e-300_dp
     real(dp), parameter :: persist_max = 0.999_dp
@@ -36,9 +37,12 @@ module garch_fit_dist_mod
     character(len=16), save :: obj_model = ""
     integer, save :: obj_dist = dist_normal
     integer, save :: obj_np = 0
+    real(dp), save :: obj_fixed_shape = 0.0_dp  ! fixed nu for dist_t_fixed
 
     public :: fit_garch_dist_model, garch_dist_oos_nll, garch_dist_persist, garch_dist_variance_path
     public :: model_param_count, dist_param_count, dist_nu_value, dist_xi_value, dist_alpha_value
+    public :: parse_dist_name
+    public :: model_abbrev, dist_abbrev
 
 contains
 
@@ -56,6 +60,8 @@ contains
         real(dp) :: f_best
         integer :: niter
         logical :: converged
+        character(len=16) :: base_tmp
+        logical :: has_fixed
 
         if (present(start_params)) then
             params0 = start_params
@@ -68,6 +74,9 @@ contains
         if (present(start_shape2)) shape20 = start_shape2
         obj_model = canonical_model(model_name)
         obj_dist = dist_id_from_name(dist_name)
+        obj_fixed_shape = 0.0_dp
+        if (obj_dist == dist_t_fixed) &
+            call parse_dist_name(dist_name, base_tmp, obj_fixed_shape, has_fixed)
         obj_np = model_npar(obj_model) + dist_nshape(obj_dist)
         if (allocated(obj_y)) deallocate(obj_y)
         allocate(obj_y(size(y)))
@@ -187,6 +196,7 @@ contains
         type(garch_params_t), intent(in) :: params
         real(dp), intent(out) :: h(:)
         real(dp) :: lh, z, c_eg, sqrth, ind, var0
+        real(dp) :: q_prev, h_prev, y_prev, asym, q_cur
         integer :: t
 
         var0 = max(variance(y), min_h)
@@ -232,8 +242,18 @@ contains
                 h(t) = max(params%omega + params%alpha*(y(t - 1) - params%theta)**2 + &
                            params%beta*h(t - 1), min_h)
             end do
+        case ("CNAGARCH")
+            q_prev = params%omega / max(1.0_dp - params%extra1, 1.0e-8_dp)
+            h_prev = max(q_prev, var0)
+            y_prev = 0.0_dp
+            do t = 1, size(y)
+                asym   = (y_prev - params%theta*sqrt(max(h_prev, min_h)))**2
+                q_cur  = max(params%omega + params%extra1*q_prev + params%extra2*(asym - h_prev), min_h)
+                h(t)   = max(q_cur + params%alpha*(asym - q_prev) + params%beta*(h_prev - q_prev), min_h)
+                q_prev = q_cur;  h_prev = h(t);  y_prev = y(t)
+            end do
         case default
-            error stop "variance_path: unsupported model"
+            error stop "variance_path: unsupported model: " // trim(model_name)
         end select
         h = max(h, min_h)
     end subroutine variance_path
@@ -260,8 +280,19 @@ contains
             call fit_egarch(y, max_iter, gtol, f_best, params, niter, converged)
         case ("QGARCH")
             call fit_qgarch(y, max_iter, gtol, f_best, params, niter, converged)
+        case ("CNAGARCH")
+            call fit_nagarch(y, max_iter, gtol, f_best, params, niter, converged)
+            block
+                real(dp) :: persist_n, rho0
+                persist_n     = params%alpha*(1.0_dp + params%theta**2) + params%beta
+                rho0          = min(persist_n * 0.9_dp, persist_max - 0.01_dp)
+                params%omega  = params%omega * max(1.0_dp - rho0, 1.0e-8_dp) / &
+                                max(1.0_dp - params%alpha - params%beta, 1.0e-8_dp)
+                params%extra1 = rho0
+                params%extra2 = 0.05_dp
+            end block
         case default
-            error stop "initial_params: unsupported model"
+            error stop "initial_params: unsupported model: " // trim(model_name)
         end select
     end subroutine initial_params
 
@@ -302,8 +333,15 @@ contains
             p(3) = params%gamma
             p(4) = logit_clip(params%beta / persist_max)
             k = 5
+        case ("CNAGARCH")
+            p(1) = log(max(params%omega, min_h))
+            call pack_two_simplex(params%alpha*(1.0_dp + params%theta**2), params%beta, p(2), p(3))
+            p(4) = params%theta
+            p(5) = logit_clip(min(params%extra1, persist_max) / persist_max)
+            p(6) = logit_clip(min(max(params%extra2, 1.0e-6_dp), 0.25_dp - 1.0e-6_dp) / 0.25_dp)
+            k = 7
         case default
-            error stop "pack_params: unsupported model"
+            error stop "pack_params: unsupported model: " // trim(model_name)
         end select
         if (dist_nshape(dist_id) >= 1) p(k) = pack_shape(dist_id, shape)
         if (dist_nshape(dist_id) >= 2) p(k + 1) = pack_shape2(dist_id, shape2)
@@ -353,11 +391,21 @@ contains
             params%gamma = p(3)
             params%beta = persist_max*sigmoid(p(4))
             k = 5
+        case ("CNAGARCH")
+            params%omega  = exp(clamp(p(1), -60.0_dp, 20.0_dp))
+            call unpack_two_simplex(p(2), p(3), comp1, params%beta)
+            params%theta  = p(4)
+            params%alpha  = comp1 / (1.0_dp + params%theta**2)
+            params%extra1 = persist_max * sigmoid(p(5))
+            params%extra2 = 0.25_dp * sigmoid(p(6))
+            k = 7
         case default
-            error stop "unpack_params: unsupported model"
+            error stop "unpack_params: unsupported model: " // trim(model_name)
         end select
         if (dist_nshape(dist_id) >= 1) then
             shape = unpack_shape(dist_id, p(k))
+        else if (dist_id == dist_t_fixed) then
+            shape = obj_fixed_shape   ! fixed nu: not in p, stored in module save
         else
             shape = 0.0_dp
         end if
@@ -418,8 +466,10 @@ contains
             model_npar = 3
         case ("NAGARCH", "GJR_GARCH", "GJR", "GJR_SIGNED", "EGARCH", "QGARCH")
             model_npar = 4
+        case ("CNAGARCH")
+            model_npar = 6
         case default
-            error stop "model_npar: unsupported model"
+            error stop "model_npar: unsupported model: " // trim(model_name)
         end select
     end function model_npar
 
@@ -431,6 +481,8 @@ contains
             model_param_count = 3
         case ("NAGARCH", "GJR_GARCH", "GJR", "GJR_SIGNED", "EGARCH", "QGARCH")
             model_param_count = 4
+        case ("CNAGARCH")
+            model_param_count = 6
         case default
             model_param_count = 0
         end select
@@ -450,7 +502,15 @@ contains
 
     integer function dist_param_count(dist_name)
         character(len=*), intent(in) :: dist_name
+        character(len=16) :: base
+        real(dp) :: fixed_shape
+        logical :: has_fixed
 
+        call parse_dist_name(dist_name, base, fixed_shape, has_fixed)
+        if (has_fixed) then
+            dist_param_count = 0
+            return
+        end if
         select case (trim(dist_name))
         case ("T", "GED", "NIG")
             dist_param_count = 1
@@ -464,11 +524,13 @@ contains
     character(len=8) function dist_nu_value(dist_name, shape)
         character(len=*), intent(in) :: dist_name
         real(dp), intent(in) :: shape
+        character(len=16) :: base
+        real(dp) :: fixed_shape
+        logical :: has_fixed
 
-        select case (trim(dist_name))
-        case ("FS_SKEWT")
-            write(dist_nu_value, '(F8.3)') shape
-        case ("T", "GED")
+        call parse_dist_name(dist_name, base, fixed_shape, has_fixed)
+        select case (trim(base))
+        case ("FS_SKEWT", "T", "GED")
             write(dist_nu_value, '(F8.3)') shape
         case default
             dist_nu_value = "-"
@@ -601,6 +663,8 @@ contains
             garch_dist_persist = params%alpha + 0.5_dp*params%gamma + params%beta
         case ("EGARCH")
             garch_dist_persist = params%beta
+        case ("CNAGARCH")
+            garch_dist_persist = params%extra1
         case default
             garch_dist_persist = params%alpha + params%beta
         end select
@@ -612,7 +676,7 @@ contains
         select case (dist_id)
         case (dist_normal)
             innovation_pdf = pdf_normal(z)
-        case (dist_t)
+        case (dist_t, dist_t_fixed)
             innovation_pdf = pdf_t(z, shape)
         case (dist_sech)
             innovation_pdf = pdf_sech(z)
@@ -633,6 +697,20 @@ contains
 
     integer function dist_id_from_name(dist_name)
         character(len=*), intent(in) :: dist_name
+        character(len=16) :: base
+        real(dp) :: fixed_shape
+        logical :: has_fixed
+
+        call parse_dist_name(dist_name, base, fixed_shape, has_fixed)
+        if (has_fixed) then
+            select case (trim(base))
+            case ("T")
+                dist_id_from_name = dist_t_fixed
+            case default
+                error stop "dist_id_from_name: fixed shape not yet supported for this distribution"
+            end select
+            return
+        end if
         select case (canonical_dist(dist_name))
         case ("NORMAL")
             dist_id_from_name = dist_normal
@@ -654,6 +732,66 @@ contains
             error stop "dist_id_from_name: unsupported distribution"
         end select
     end function dist_id_from_name
+
+    subroutine parse_dist_name(dist_name, base, fixed_shape, has_fixed)
+        character(len=*), intent(in)  :: dist_name
+        character(len=*), intent(out) :: base
+        real(dp),         intent(out) :: fixed_shape
+        logical,          intent(out) :: has_fixed
+        integer :: i, n, ios
+        character :: c
+
+        n = len_trim(dist_name)
+        do i = 1, n
+            c = dist_name(i:i)
+            if (c >= '0' .and. c <= '9') exit
+        end do
+        if (i > n) then
+            base = dist_name(1:n)
+            fixed_shape = 0.0_dp
+            has_fixed = .false.
+            return
+        end if
+        base = dist_name(1:i-1)
+        ! strip trailing underscores that separated name from params
+        do while (len_trim(base) > 0 .and. base(len_trim(base):len_trim(base)) == '_')
+            base(len_trim(base):len_trim(base)) = ' '
+        end do
+        read(dist_name(i:n), *, iostat=ios) fixed_shape
+        has_fixed = (ios == 0)
+        if (.not. has_fixed) fixed_shape = 0.0_dp
+    end subroutine parse_dist_name
+
+    pure function model_abbrev(model_name) result(s)
+        character(len=*), intent(in) :: model_name
+        character(len=4) :: s
+        select case (trim(model_name))
+        case ("SYMM_GARCH", "GARCH"); s = "SG"
+        case ("NAGARCH");              s = "NAG"
+        case ("CNAGARCH");             s = "CNAG"
+        case ("GJR_GARCH", "GJR");    s = "GJR"
+        case ("GJR_SIGNED");           s = "GJRS"
+        case ("EGARCH");               s = "EG"
+        case ("QGARCH");               s = "QG"
+        case default;                  s = model_name(1:min(4, len_trim(model_name)))
+        end select
+    end function model_abbrev
+
+    pure function dist_abbrev(dist_name) result(s)
+        character(len=*), intent(in) :: dist_name
+        character(len=6) :: s
+        select case (trim(dist_name))
+        case ("NORMAL");   s = "N"
+        case ("T");        s = "T"
+        case ("FS_SKEWT"); s = "FS"
+        case ("SECH");     s = "SECH"
+        case ("GED");      s = "GED"
+        case ("LAPLACE");  s = "LAP"
+        case ("LOGISTIC"); s = "LOG"
+        case ("NIG");      s = "NIG"
+        case default;      s = dist_name(1:min(6, len_trim(dist_name)))
+        end select
+    end function dist_abbrev
 
     character(len=16) function canonical_model(model_name)
         character(len=*), intent(in) :: model_name
