@@ -159,6 +159,14 @@ contains
             deallocate(variance)
             result%nparam = 1
             call ewma_skew_kurt(y, params, result%skew, result%ekurt)
+        case ("GARCH_M")
+            result%persist = symm_garch_persist(params)   ! alpha + beta
+            h_unc = params%omega / max(1.0_dp - result%persist, 1.0e-8_dp)
+            result%nparam = 5
+        case ("NAGARCH_M")
+            result%persist = nagarch_persist(params)      ! alpha*(1+theta^2) + beta
+            h_unc = params%omega / max(1.0_dp - result%persist, 1.0e-8_dp)
+            result%nparam = 6
         case ("SYMM_GARCH")
             result%persist = symm_garch_persist(params)
             h_unc = params%omega / max(1.0_dp - result%persist, 1.0e-8_dp)
