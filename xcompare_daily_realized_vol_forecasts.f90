@@ -36,7 +36,10 @@ module compare_daily_realized_vol_forecasts_mod
                                          fit_semivar_har_variance, &
                                          fit_midas_variance, fit_heavy_variance, &
                                          gaussian_variance_loglik, qlike_loss
-    use realized_garch_mod, only: realized_garch_result_t, fit_realized_garch
+    use realized_garch_mod, only: realized_garch_result_t, fit_realized_garch, &
+                                  realized_egarch_result_t, fit_realized_egarch
+    use msgarch_mod, only: msgarch_result_t, fit_msgarch
+    use msnagarch_mod, only: msnagarch_result_t, fit_msnagarch
     use stats_mod, only: mean, sd, correlation, demean_first, nonnegative_least_squares
     use regression_diagnostics_mod, only: active_nnls_tstats, predictor_correlations, rank_nonzero_by_tstat, &
                                           print_response_predictor_corr_matrix
@@ -96,7 +99,7 @@ module compare_daily_realized_vol_forecasts_mod
 contains
 
     subroutine run_compare_daily_realized_vol_forecasts()
-        character(len=256) :: filename
+        character(len=256) :: intraday_prices_file, implied_vol_file
         type(ohlcv_series_t) :: bars, regular_bars
         type(daily_realized_panel_t) :: daily
         character(len=32), allocatable :: implied_vol_names(:)
@@ -108,17 +111,18 @@ contains
         real(dp) :: t0, t1, read_sec, fit_sec, elapsed_sec
 
         call cpu_time(t0)
-        filename = "c:\python\intraday_prices\spy_5min_databento.csv"
+        intraday_prices_file = "c:\python\databento\data_1min\spy_1min_databento.csv" ! "c:\python\intraday_prices\spy_5min_databento.csv"
+        implied_vol_file = "vix_spy.csv"
         ntest_days = default_ntest_days
         nargs = command_argument_count()
-        if (nargs >= 1) call get_command_argument(1, filename)
+        if (nargs >= 1) call get_command_argument(1, intraday_prices_file)
         if (nargs >= 2) call read_integer_arg(2, ntest_days)
 
         call print_program_header("xcompare_daily_realized_vol_forecasts.f90")
         call cpu_time(t1)
-        call read_intraday_prices_csv(filename, bars)
+        call read_intraday_prices_csv(intraday_prices_file, bars)
         call filter_intraday_session(bars, regular_bars)
-        call read_price_csv("vix_spy.csv", implied_vol_dates, implied_vol_names, implied_vol_values, &
+        call read_price_csv(implied_vol_file, implied_vol_dates, implied_vol_names, implied_vol_values, &
                             selected_cols=[character(len=3) :: "VIX"])
         read_sec = elapsed_since(t1)
 
@@ -129,7 +133,7 @@ contains
         test_first = train_nobs + 1
         allocate(ret_cc(nobs), h(nobs), x(nobs), jump(nobs), implied_var(nobs), &
                  rows(2*(size(cc_garch_models) + merge(1, 0, fit_implied_vol_only) + &
-                      (13 + merge(1, 0, fit_harx_implied_vol) + &
+                      (14 + merge(1, 0, fit_harx_implied_vol) + &
                        merge(1, 0, fit_harx_implied_vol_leverage))*size(measure_names))))
         ret_cc = log(daily%close(2:nobs + 1) / daily%close(1:nobs))
         jump = max(daily%rv(1:nobs) - daily%bpv(1:nobs), 0.0_dp)
@@ -147,6 +151,10 @@ contains
             irow = irow + 1
             call fit_and_score_iv_only(rows(irow), ret_cc, implied_var, train_nobs, test_first, h)
         end if
+        irow = irow + 1
+        call fit_and_score_msgarch(rows(irow), ret_cc, train_nobs, test_first, h)
+        irow = irow + 1
+        call fit_and_score_msnagarch(rows(irow), ret_cc, train_nobs, test_first, h)
         do imeas = 1, size(measure_names)
             call select_realized_measure(daily, measure_names(imeas), x)
             irow = irow + 1
@@ -189,6 +197,8 @@ contains
             call fit_and_score_heavy(rows(irow), measure_names(imeas), ret_cc, x, train_nobs, test_first, h)
             irow = irow + 1
             call fit_and_score_realgarch(rows(irow), measure_names(imeas), ret_cc, x, train_nobs, test_first, h)
+            irow = irow + 1
+            call fit_and_score_realegarch(rows(irow), measure_names(imeas), ret_cc, x, train_nobs, test_first, h)
         end do
         irow = irow + 1
         call fit_and_score_semivar_har(rows(irow), daily, ret_cc, train_nobs, test_first, h)
@@ -203,7 +213,7 @@ contains
         elapsed_sec = elapsed_since(t0)
 
         call rank_rows(rows(1:irow))
-        call print_summary(filename, daily, train_nobs, ntest_days, rows(1:irow), read_sec, fit_sec, elapsed_sec)
+        call print_summary(intraday_prices_file, implied_vol_file, daily, train_nobs, ntest_days, rows(1:irow), read_sec, fit_sec, elapsed_sec)
         call print_implied_vol_correlation_table(daily%date(test_first + 1:nobs + 1), rows(1:irow), implied_vol_dates, &
                                                  implied_vol_values(:, 1), "VIX", adjust_implied_vol_day_of_week)
         deallocate(ret_cc, h, x, jump, implied_var, rows)
@@ -358,6 +368,36 @@ contains
             cc_garch_param_count = 0
         end select
     end function cc_garch_param_count
+
+    subroutine fit_and_score_msnagarch(row, ret_cc, train_nobs, test_first, h)
+        type(score_row_t), intent(out) :: row
+        real(dp), intent(in)  :: ret_cc(:)
+        integer,  intent(in)  :: train_nobs, test_first
+        real(dp), intent(out) :: h(:)
+        type(msnagarch_result_t) :: result
+        integer :: nobs
+
+        nobs = size(ret_cc)
+        call fit_msnagarch(ret_cc, train_nobs, max_iter, gtol, result, h)
+        call fill_row(row, "CC", "MSNAGARCH", 11, 0.0_dp, result%persist(1), result%persist(2), &
+                      ret_cc(test_first:nobs), h(test_first:nobs), result%niter, result%converged)
+        call store_full_path(row, h)
+    end subroutine fit_and_score_msnagarch
+
+    subroutine fit_and_score_msgarch(row, ret_cc, train_nobs, test_first, h)
+        type(score_row_t), intent(out) :: row
+        real(dp), intent(in)  :: ret_cc(:)
+        integer,  intent(in)  :: train_nobs, test_first
+        real(dp), intent(out) :: h(:)
+        type(msgarch_result_t) :: result
+        integer :: nobs
+
+        nobs = size(ret_cc)
+        call fit_msgarch(ret_cc, train_nobs, max_iter, gtol, result, h)
+        call fill_row(row, "CC", "MSGARCH", 9, 0.0_dp, result%persist(1), result%persist(2), &
+                      ret_cc(test_first:nobs), h(test_first:nobs), result%niter, result%converged)
+        call store_full_path(row, h)
+    end subroutine fit_and_score_msgarch
 
     subroutine fit_and_score_measure(row, measure, model, ret_cc, x, train_nobs, test_first, fit_lambda, h)
         type(score_row_t), intent(out) :: row
@@ -664,6 +704,22 @@ contains
         call store_full_path(row, h)
     end subroutine fit_and_score_realgarch
 
+    subroutine fit_and_score_realegarch(row, measure, ret_cc, x, train_nobs, test_first, h)
+        type(score_row_t), intent(out) :: row
+        character(len=*), intent(in) :: measure
+        real(dp), intent(in) :: ret_cc(:), x(:)
+        integer, intent(in) :: train_nobs, test_first
+        real(dp), intent(out) :: h(:)
+        type(realized_egarch_result_t) :: result
+        integer :: nobs
+
+        nobs = size(ret_cc)
+        call fit_realized_egarch(ret_cc, x, train_nobs, max_iter, gtol, result, h)
+        call fill_row(row, measure, "REALEGARCH", 9, 0.0_dp, result%params%omega, result%persist, &
+                      ret_cc(test_first:nobs), h(test_first:nobs), result%niter, result%converged)
+        call store_full_path(row, h)
+    end subroutine fit_and_score_realegarch
+
     subroutine append_iv_augmented_rows(rows, irow, ret_cc, implied_var, train_nobs, test_first, h)
         type(score_row_t), intent(inout) :: rows(:)
         integer, intent(inout) :: irow
@@ -941,8 +997,8 @@ contains
         end do
     end subroutine rank_rows
 
-    subroutine print_summary(filename, daily, train_nobs, ntest_days, rows, read_sec, fit_sec, elapsed_sec)
-        character(len=*), intent(in) :: filename
+    subroutine print_summary(intraday_prices_file, implied_vol_file, daily, train_nobs, ntest_days, rows, read_sec, fit_sec, elapsed_sec)
+        character(len=*), intent(in) :: intraday_prices_file, implied_vol_file
         type(daily_realized_panel_t), intent(in) :: daily
         integer, intent(in) :: train_nobs, ntest_days
         type(score_row_t), intent(in) :: rows(:)
@@ -951,7 +1007,8 @@ contains
 
         best = maxloc(rows%loglik, dim=1)
         print '(A)', "Daily CC volatility forecasts from intraday realized measures"
-        print '(A,A)', "Input file: ", trim(filename)
+        print '(A,A)', "Intraday prices file: ", trim(intraday_prices_file)
+        print '(A,A)', "Implied vol file:     ", trim(implied_vol_file)
         print '(A,I0,A,A,A,A)', "Daily bars: ", size(daily%date), " from ", date_label(daily%date(1)), " to ", &
               date_label(daily%date(size(daily%date)))
         print '(A,I0,A,I0,A,A)', "Training observations: ", train_nobs, "  test observations: ", ntest_days, &
