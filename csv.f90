@@ -14,7 +14,8 @@ module csv_mod
     use strings_mod, only: split_string, uppercase
     implicit none
     private
-    public :: read_price_csv, read_ohlc_csv, read_numeric_csv, log_returns, print_price_sample_info, date_label
+    public :: read_price_csv, read_ohlc_csv, read_numeric_csv, log_returns, print_price_sample_info, date_label, &
+              read_rf_csv, nearest_previous_rf
 
 contains
 
@@ -480,5 +481,57 @@ contains
         write(label,'(I4.4,A,I2.2,A,I2.2)') yyyymmdd / 10000, "-", &
             mod(yyyymmdd / 100, 100), "-", mod(yyyymmdd, 100)
     end function date_label
+
+    ! Read a two-column CSV (no header): YYYYMMDD integer, annual rf fraction.
+    ! Comment lines (starting with #) and blank lines are skipped.
+    subroutine read_rf_csv(filename, rdates, rates)
+        character(len=*), intent(in)  :: filename
+        integer,  allocatable, intent(out) :: rdates(:)
+        real(dp), allocatable, intent(out) :: rates(:)
+        integer  :: unit, ios, n, d
+        real(dp) :: r
+        integer,  allocatable :: tmp_d(:)
+        real(dp), allocatable :: tmp_r(:)
+        character(len=256) :: line
+        open(newunit=unit, file=filename, status='old', action='read', iostat=ios)
+        if (ios /= 0) error stop "read_rf_csv: cannot open file"
+        n = 0
+        do
+            read(unit, '(A)', iostat=ios) line
+            if (ios /= 0) exit
+            line = adjustl(line)
+            if (line(1:1) == '#' .or. len_trim(line) == 0) cycle
+            read(line, *, iostat=ios) d, r
+            if (ios == 0) n = n + 1
+        end do
+        rewind(unit)
+        allocate(tmp_d(n), tmp_r(n))
+        n = 0
+        do
+            read(unit, '(A)', iostat=ios) line
+            if (ios /= 0) exit
+            line = adjustl(line)
+            if (line(1:1) == '#' .or. len_trim(line) == 0) cycle
+            read(line, *, iostat=ios) d, r
+            if (ios /= 0) cycle
+            n = n + 1;  tmp_d(n) = d;  tmp_r(n) = r
+        end do
+        close(unit)
+        allocate(rdates(n), rates(n))
+        rdates = tmp_d(1:n);  rates = tmp_r(1:n)
+    end subroutine read_rf_csv
+
+    ! Return the rate for the most recent rf_date <= target_date.
+    ! Falls back to the first available rate if all rf_dates > target_date.
+    real(dp) function nearest_previous_rf(target_date, rdates, rates)
+        integer,  intent(in) :: target_date, rdates(:)
+        real(dp), intent(in) :: rates(:)
+        integer :: i, best
+        best = 1
+        do i = 1, size(rdates)
+            if (rdates(i) <= target_date) best = i
+        end do
+        nearest_previous_rf = rates(best)
+    end function nearest_previous_rf
 
 end module csv_mod
