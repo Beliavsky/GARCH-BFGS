@@ -6,6 +6,7 @@
 ! sort_real: ascending in-place sort
 ! covariance: sample covariance of two vectors
 ! correlation: Pearson correlation of two vectors
+! simple_linreg: OLS slope and intercept of y on x
 ! demean_first: subtract mean of first n values from a vector
 ! autocorr:  autocorrelations at lags 1:size(acf)
 ! print_acf_table: formatted table of ACF rows
@@ -15,12 +16,15 @@
 ! nonnegative_least_squares: coordinate-descent NNLS for y ~= X*b, b >= 0
 
 module stats_mod
-    use kind_mod, only: dp
+    use kind_mod,       only: dp
+    use math_const_mod, only: log_sqrt_2pi, pi
+    use linalg_mod,     only: gauss_elim, chol_factor, chol_solve_vec
     implicit none
     private
-    public :: mean, variance, sd, median, skewness, excess_kurtosis, covariance, correlation, demean_first
+    public :: mean, variance, sd, median, skewness, excess_kurtosis, covariance, correlation, simple_linreg, demean_first
     public :: sort_real, autocorr, print_acf_table, column_summary_stats, column_robust_tail_ratios
     public :: print_column_summary_stats, covariance_matrix, correlation_matrix, nonnegative_least_squares
+    public :: gaussian_loglik, fit_ar_direct, fit_ar_ols
 
 contains
 
@@ -123,6 +127,105 @@ contains
             end do
         end do
     end subroutine correlation_matrix
+
+    pure subroutine simple_linreg(x, y, slope, intercept)
+        ! OLS regression of y on x: returns slope and intercept of y = intercept + slope*x.
+        real(dp), intent(in)  :: x(:)          ! predictor values
+        real(dp), intent(in)  :: y(:)          ! response values (same length as x)
+        real(dp), intent(out) :: slope         ! OLS slope
+        real(dp), intent(out) :: intercept     ! OLS intercept
+        integer  :: n
+        real(dp) :: sx, sy, sxx, sxy, denom
+
+        n      = size(x)
+        sx     = sum(x);   sy  = sum(y)
+        sxx    = sum(x*x); sxy = sum(x*y)
+        denom  = real(n, dp)*sxx - sx*sx
+        if (abs(denom) < 1.0e-14_dp) then
+            slope = 0.0_dp; intercept = sy / real(n, dp)
+        else
+            slope     = (real(n, dp)*sxy - sx*sy) / denom
+            intercept = (sy - slope*sx) / real(n, dp)
+        end if
+    end subroutine simple_linreg
+
+    subroutine fit_ar_direct(x, p, h, beta, nfit)
+        ! Direct h-step OLS AR(p) fit on demeaned series x: x(t+h) = sum_j beta(j)*x(t-j+1).
+        real(dp), intent(in)  :: x(:)      ! demeaned input series
+        integer,  intent(in)  :: p         ! AR order
+        integer,  intent(in)  :: h         ! forecast horizon (direct projection)
+        real(dp), intent(out) :: beta(p)   ! OLS coefficients, lag 1 first
+        integer,  intent(out) :: nfit      ! number of observations used in fit
+
+        integer :: t, j, n
+        real(dp), allocatable :: A(:,:), y(:), XtX(:,:), Xty(:)
+
+        n    = size(x)
+        nfit = n - p - h + 1
+        beta = 0.0_dp
+        if (nfit <= p) return
+
+        allocate(A(nfit,p), y(nfit), XtX(p,p), Xty(p))
+        do t = 1, nfit
+            y(t) = x(p + t - 1 + h)
+            do j = 1, p
+                A(t,j) = x(p + t - j)
+            end do
+        end do
+        XtX = matmul(transpose(A), A)
+        Xty = matmul(transpose(A), y)
+        call gauss_elim(XtX, Xty, p, beta)
+        deallocate(A, y, XtX, Xty)
+    end subroutine fit_ar_direct
+
+    subroutine fit_ar_ols(y, n, p, beta, sigma2, logl_out)
+        ! OLS AR(p) fit with intercept: y(t) = beta(1) + beta(2)*y(t-1) + ... + beta(p+1)*y(t-p) + eps.
+        ! Estimates via Cholesky solve of the normal equations X'X*beta = X'y using
+        ! observations t = p+1..n (neff = n-p).  Returns MLE sigma2 = RSS/neff and
+        ! the Gaussian log-likelihood.  Sets sigma2=huge and logl_out=-huge on failure.
+        real(dp), intent(in)  :: y(n)          ! input time series
+        integer,  intent(in)  :: n             ! length of y
+        integer,  intent(in)  :: p             ! AR order (0 = constant-only model)
+        real(dp), intent(out) :: beta(p+1)     ! coefficients: (mu, phi_1, ..., phi_p)
+        real(dp), intent(out) :: sigma2        ! MLE residual variance RSS/neff
+        real(dp), intent(out) :: logl_out      ! Gaussian log-likelihood
+        real(dp) :: XtX(p+1,p+1), Xty(p+1), x_t(p+1), L(p+1,p+1), res, rss
+        integer  :: t, i, j, neff
+        logical  :: ok
+
+        neff = n - p
+        XtX  = 0.0_dp
+        Xty  = 0.0_dp
+        do t = p+1, n
+            x_t(1) = 1.0_dp
+            do i = 1, p
+                x_t(i+1) = y(t-i)
+            end do
+            do i = 1, p+1
+                Xty(i) = Xty(i) + x_t(i)*y(t)
+                do j = 1, p+1
+                    XtX(i,j) = XtX(i,j) + x_t(i)*x_t(j)
+                end do
+            end do
+        end do
+
+        call chol_factor(XtX, p+1, L, ok)
+        if (.not. ok) then
+            beta = 0.0_dp;  sigma2 = huge(1.0_dp);  logl_out = -huge(1.0_dp);  return
+        end if
+        call chol_solve_vec(L, p+1, Xty, beta)
+
+        rss = 0.0_dp
+        do t = p+1, n
+            res = y(t) - beta(1)
+            do i = 1, p
+                res = res - beta(i+1)*y(t-i)
+            end do
+            rss = rss + res**2
+        end do
+        sigma2   = rss / real(neff, dp)
+        logl_out = -0.5_dp*real(neff, dp) * (log(2.0_dp*pi*sigma2) + 1.0_dp)
+    end subroutine fit_ar_ols
 
     subroutine demean_first(x, n)
         ! Subtract mean(x(1:n)) from all elements of x.
@@ -408,10 +511,23 @@ contains
             "Series", "median", "mean", "sd", "skew", "ex_kurt", "min", "max"
         print '(A)', repeat("-", 106)
         do j = 1, ncols
-            print '(A12,1X,ES12.4,1X,ES12.4,1X,ES12.4,1X,F12.4,1X,F12.4,1X,ES12.4,1X,ES12.4)', &
+            print '(A12,5(1X,F12.4),1X,F12.4,1X,F12.4)', &
                 trim(col_names(j)), med(j), avg(j), sdev(j), skew(j), ekurt(j), xmin(j), xmax(j)
         end do
         print '(A,/)', repeat("-", 106)
     end subroutine print_column_summary_stats
+
+    real(dp) function gaussian_loglik(y, h)
+        real(dp), intent(in) :: y(:), h(:)
+        real(dp), parameter  :: min_h = 1.0e-12_dp
+        integer :: i
+        if (size(y) /= size(h)) error stop "gaussian_loglik: array sizes differ"
+        gaussian_loglik = 0.0_dp
+        do i = 1, size(y)
+            gaussian_loglik = gaussian_loglik - log_sqrt_2pi &
+                              - 0.5_dp*log(max(h(i), min_h)) &
+                              - 0.5_dp*y(i)**2 / max(h(i), min_h)
+        end do
+    end function gaussian_loglik
 
 end module stats_mod
