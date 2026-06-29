@@ -15,6 +15,7 @@ module garch_types_mod
         real(dp) :: scale = 0.0_dp
         real(dp) :: extra1 = 0.0_dp
         real(dp) :: extra2 = 0.0_dp
+        real(dp), allocatable :: ar_coefs(:)    ! AR(p) mean-equation coefficients phi_1..phi_p
         real(dp), allocatable :: alpha_lags(:)
         real(dp), allocatable :: beta_lags(:)
     end type garch_params_t
