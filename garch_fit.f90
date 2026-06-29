@@ -10,11 +10,15 @@ module garch_fit_mod
     use fgarch_mod,     only: fg_dist_normal, fgarch_set_data, fgarch_set_dist, &
                               fgarch_twist_obj, fgarch_twist_transform, fgarch_twist_inv_transform, &
                               fgarch_twist_vol_ann, fgarch_twist_skew_kurt
+    use special_mod,    only: digamma
     use bfgs_mod,       only: bfgs_minimize
     implicit none
     private
 
     public :: fit_symm_garch, fit_symm_garch_pq, fit_qgarch, fit_figarch, fit_fi_nagarch
+    public :: fit_garch_m, fit_nagarch_m
+    public :: fit_ar_garch, fit_ar_nagarch, fit_ar_garch_t, fit_ar_nagarch_t, fit_ar_gjr, fit_ar_gjr_t
+    public :: fit_figarch_t, fit_fi_nagarch_t
     public :: fit_nagarch, fit_nagarch_pq, fit_rgarch, fit_carr_park
     public :: fit_regarch1, fit_regarch2, fit_rgarch_meas
     public :: fit_nagarch_range, fit_gjr, fit_gjr_signed, fit_egarch, fit_aparch, fit_harch, fit_tgarch, fit_avgarch
@@ -52,11 +56,15 @@ module garch_fit_mod
     integer, parameter :: ewma_np = 1
     integer, parameter :: aewma_nag_np = 3
     integer, parameter :: aewma_twist_np = 4
+    integer, parameter :: garch_m_np    = 5
+    integer, parameter :: nagarch_m_np  = 6
     integer, parameter :: symm_garch_np = 3
     integer, parameter :: qgarch_np = 4
     integer, parameter :: csgarch_np = 5
     integer, parameter :: figarch_np = 4
     integer, parameter :: fi_nagarch_np = 5
+    integer, parameter :: figarch_t_np = 5
+    integer, parameter :: fi_nagarch_t_np = 6
     integer, parameter :: figarch_full_trunc_lag = 1000
     integer, parameter :: figarch_fast_trunc_lag = 100
     integer, parameter :: nagarch_np = 4
@@ -78,6 +86,11 @@ module garch_fit_mod
     integer, parameter :: rm2006_kmax = 14
     integer, parameter :: fgarch_twist_np = 5
     integer, parameter :: fgarch_twist_range_np = 6
+    real(dp), allocatable, save :: gm_obs(:)
+    integer,               save :: gm_nobs = 0
+    real(dp), allocatable, save :: ar_garch_obs(:)  ! data for AR-GARCH objectives
+    integer,               save :: ar_garch_nobs = 0
+    integer,               save :: ar_garch_p    = 0  ! AR order
     real(dp), allocatable, save :: ewma_obs(:)
     real(dp), allocatable, save :: qgarch_obs(:)
     real(dp), allocatable, save :: csgarch_obs(:)
@@ -279,6 +292,1274 @@ contains
         params = garch_params_t()
         call garch_transform(p_best, params%omega, params%alpha, params%beta)
     end subroutine fit_symm_garch
+
+    ! ── GARCH-in-Mean (GARCH-M) ───────────────────────────────────────────────
+    !
+    ! Model: r_t = mu + lam*sqrt(h_t) + eps_t
+    !        h_t = omega + alpha*eps_{t-1}^2 + beta*h_{t-1}
+    !
+    ! Parameters stored in garch_params_t:
+    !   omega -> params%omega, alpha -> params%alpha, beta -> params%beta
+    !   lam   -> params%gamma  (risk premium on conditional volatility)
+    !   mu    -> params%theta  (constant mean)
+    !
+    ! Unconstrained map: p(1)=mu (free), p(2)=lam (free),
+    !                    p(3:5) -> (omega,alpha,beta) via GARCH softmax.
+    !
+    ! Analytic gradient uses forward recurrences for both dh_t/dtheta
+    ! and deps_t/dtheta simultaneously.
+
+    subroutine garch_m_set_data(y)
+        real(dp), intent(in) :: y(:)
+        if (allocated(gm_obs)) deallocate(gm_obs)
+        gm_nobs = size(y)
+        allocate(gm_obs(gm_nobs))
+        gm_obs = y
+    end subroutine garch_m_set_data
+
+    subroutine garch_m_transform(p, mu, lam, omega, alpha, beta)
+        real(dp), intent(in)  :: p(garch_m_np)
+        real(dp), intent(out) :: mu, lam, omega, alpha, beta
+        mu  = p(1)
+        lam = p(2)
+        call garch_transform(p(3:5), omega, alpha, beta)
+    end subroutine garch_m_transform
+
+    subroutine garch_m_inv_transform(mu, lam, omega, alpha, beta, p)
+        real(dp), intent(in)  :: mu, lam, omega, alpha, beta
+        real(dp), intent(out) :: p(garch_m_np)
+        p(1) = mu
+        p(2) = lam
+        call garch_inv_transform(omega, alpha, beta, p(3:5))
+    end subroutine garch_m_inv_transform
+
+    ! Negative log-likelihood (Gaussian) and analytic gradient for GARCH-M.
+    !
+    ! NLL = sum_t [ 0.5*log(h_t) + eps_t^2/(2*h_t) ]
+    !
+    ! Forward recurrences simultaneously track dh_t/dtheta and deps_t/dtheta:
+    !   deps_t/dmu    = -1            - (lam/(2*sqrt(h_t))) * dh_t/dmu
+    !   deps_t/dlam   = -sqrt(h_t)   - (lam/(2*sqrt(h_t))) * dh_t/dlam
+    !   deps_t/dtheta = -(lam/(2*sqrt(h_t))) * dh_t/dtheta   {theta=omega,alpha,beta}
+    !
+    !   dh_t/dmu    = 2*alpha*eps_{t-1} * deps_{t-1}/dmu    + beta * dh_{t-1}/dmu
+    !   dh_t/dlam   = 2*alpha*eps_{t-1} * deps_{t-1}/dlam   + beta * dh_{t-1}/dlam
+    !   dh_t/domega = 1  + 2*alpha*eps_{t-1} * deps_{t-1}/domega + beta * dh_{t-1}/domega
+    !   dh_t/dalpha = eps_{t-1}^2 + 2*alpha*eps_{t-1} * deps_{t-1}/dalpha + beta * dh_{t-1}/dalpha
+    !   dh_t/dbeta  = h_{t-1}    + 2*alpha*eps_{t-1} * deps_{t-1}/dbeta  + beta * dh_{t-1}/dbeta
+    subroutine garch_m_obj(p, np, f, g)
+        integer,  intent(in)  :: np
+        real(dp), intent(in)  :: p(np)
+        real(dp), intent(out) :: f, g(np)
+        real(dp) :: mu, lam, omega, alpha, beta
+        real(dp) :: h, eps, sqrth, lam_over_2sqrth
+        real(dp) :: h_unc, gamma_ab, persist
+        ! d(h_t)/d(mu, lam, omega, alpha, beta)
+        real(dp) :: dh_mu, dh_lam, dh_om, dh_al, dh_be
+        ! d(eps_t)/d(mu, lam, omega, alpha, beta)
+        real(dp) :: de_mu, de_lam, de_om, de_al, de_be
+        ! accumulated physical gradients
+        real(dp) :: grd_mu, grd_lam, grd_om, grd_al, grd_be
+        real(dp) :: fh, fe          ! d(NLL_t)/d(h_t) and d(NLL_t)/d(eps_t)
+        integer  :: t
+
+        call garch_m_transform(p, mu, lam, omega, alpha, beta)
+        persist  = alpha + beta
+        gamma_ab = max(1.0_dp - persist, 1.0e-8_dp)
+        h_unc    = omega / gamma_ab
+
+        ! --- initialise h_1 = h_unc, eps_1 = r_1 - mu - lam*sqrt(h_unc) ---
+        h     = h_unc
+        sqrth = sqrt(h)
+        eps   = gm_obs(1) - mu - lam*sqrth
+
+        ! dh_1/d(omega,alpha,beta) from unconditional formula; dh_1/d(mu,lam)=0
+        dh_mu = 0.0_dp
+        dh_lam = 0.0_dp
+        dh_om = 1.0_dp / gamma_ab
+        dh_al = h_unc / gamma_ab
+        dh_be = h_unc / gamma_ab
+
+        lam_over_2sqrth = lam / (2.0_dp * sqrth)
+        de_mu  = -1.0_dp - lam_over_2sqrth * dh_mu
+        de_lam = -sqrth  - lam_over_2sqrth * dh_lam
+        de_om  =         - lam_over_2sqrth * dh_om
+        de_al  =         - lam_over_2sqrth * dh_al
+        de_be  =         - lam_over_2sqrth * dh_be
+
+        f      = real(gm_nobs, dp) * log_sqrt_2pi + 0.5_dp * (log(h) + eps**2 / h)
+        fh     = 0.5_dp * (1.0_dp/h - eps**2 / h**2)
+        fe     = eps / h
+        grd_mu  = fh*dh_mu  + fe*de_mu
+        grd_lam = fh*dh_lam + fe*de_lam
+        grd_om  = fh*dh_om  + fe*de_om
+        grd_al  = fh*dh_al  + fe*de_al
+        grd_be  = fh*dh_be  + fe*de_be
+
+        do t = 2, gm_nobs
+            ! advance h and eps
+            dh_mu  = 2.0_dp*alpha*eps*de_mu  + beta*dh_mu
+            dh_lam = 2.0_dp*alpha*eps*de_lam + beta*dh_lam
+            dh_om  = 1.0_dp    + 2.0_dp*alpha*eps*de_om  + beta*dh_om
+            dh_al  = eps**2    + 2.0_dp*alpha*eps*de_al  + beta*dh_al
+            dh_be  = h         + 2.0_dp*alpha*eps*de_be  + beta*dh_be
+            h   = max(omega + alpha*eps**2 + beta*h, 1.0e-12_dp)
+            sqrth = sqrt(h)
+            eps = gm_obs(t) - mu - lam*sqrth
+
+            lam_over_2sqrth = lam / (2.0_dp * sqrth)
+            de_mu  = -1.0_dp - lam_over_2sqrth * dh_mu
+            de_lam = -sqrth  - lam_over_2sqrth * dh_lam
+            de_om  =         - lam_over_2sqrth * dh_om
+            de_al  =         - lam_over_2sqrth * dh_al
+            de_be  =         - lam_over_2sqrth * dh_be
+
+            f      = f + 0.5_dp * (log(h) + eps**2 / h)
+            fh     = 0.5_dp * (1.0_dp/h - eps**2 / h**2)
+            fe     = eps / h
+            grd_mu  = grd_mu  + fh*dh_mu  + fe*de_mu
+            grd_lam = grd_lam + fh*dh_lam + fe*de_lam
+            grd_om  = grd_om  + fh*dh_om  + fe*de_om
+            grd_al  = grd_al  + fh*dh_al  + fe*de_al
+            grd_be  = grd_be  + fh*dh_be  + fe*de_be
+        end do
+
+        ! chain rule: physical -> unconstrained
+        ! p(1)=mu, p(2)=lam are already unconstrained
+        ! p(3:5) -> (omega,alpha,beta) via softmax (same Jacobian as garch_obj)
+        g(1) = grd_mu
+        g(2) = grd_lam
+        g(3) =  grd_om * omega
+        g(4) =  grd_al * alpha*(1.0_dp - alpha) - grd_be * alpha*beta
+        g(5) = -grd_al * alpha*beta             + grd_be * beta*(1.0_dp - beta)
+
+        f = f / real(gm_nobs, dp)
+        g = g / real(gm_nobs, dp)
+    end subroutine garch_m_obj
+
+    subroutine fit_garch_m(y, max_iter, gtol, f_best, params, niter_best, converged_best)
+        real(dp), intent(in)  :: y(:), gtol
+        integer,  intent(in)  :: max_iter
+        real(dp), intent(out) :: f_best
+        type(garch_params_t), intent(out) :: params
+        integer,  intent(out) :: niter_best
+        logical,  intent(out) :: converged_best
+        ! starting points: (mu, lam, omega, alpha, beta)
+        ! lam starts at 0 (no risk premium) with the same GARCH seeds as fit_symm_garch
+        real(dp), parameter :: garch_starts(symm_garch_np, n_start) = reshape( &
+            [1.0e-6_dp, 0.04_dp, 0.90_dp, &
+             1.0e-6_dp, 0.06_dp, 0.88_dp, &
+             5.0e-6_dp, 0.08_dp, 0.85_dp, &
+             5.0e-6_dp, 0.10_dp, 0.80_dp], [symm_garch_np, n_start])
+        real(dp), parameter :: lam_starts(n_start) = [0.0_dp, 1.0_dp, 2.0_dp, -1.0_dp]
+        real(dp) :: p(garch_m_np), p0(garch_m_np), p_best(garch_m_np), f_try
+        real(dp) :: mu, lam, omega, alpha, beta
+        integer  :: istart, niter_try
+        logical  :: converged_try
+
+        call garch_m_set_data(y)
+        f_best = huge(1.0_dp)
+        p_best = 0.0_dp
+        niter_best = 0
+        converged_best = .false.
+
+        do istart = 1, n_start
+            call garch_m_inv_transform(0.0_dp, lam_starts(istart), &
+                                       garch_starts(1,istart), garch_starts(2,istart), &
+                                       garch_starts(3,istart), p0)
+            p = p0
+            call bfgs_minimize(garch_m_obj, p, garch_m_np, max_iter, gtol, f_try, niter_try, converged_try)
+            if (f_try < f_best) then
+                f_best = f_try
+                p_best = p
+                niter_best = niter_try
+                converged_best = converged_try
+            end if
+        end do
+
+        params = garch_params_t()
+        call garch_m_transform(p_best, mu, lam, omega, alpha, beta)
+        params%omega = omega
+        params%alpha = alpha
+        params%beta  = beta
+        params%gamma = lam     ! risk premium
+        params%twist = mu      ! constant mean
+    end subroutine fit_garch_m
+
+    ! ── NAGARCH-in-Mean (NAGARCH-M) ───────────────────────────────────────────
+    !
+    ! Model: r_t = mu + lam*sqrt(h_t) + eps_t
+    !        h_t = omega + alpha*(eps_{t-1} - theta*sqrt(h_{t-1}))^2 + beta*h_{t-1}
+    !
+    ! Parameters stored in garch_params_t (consistent with GARCH_M convention):
+    !   omega -> params%omega, alpha -> params%alpha, beta -> params%beta
+    !   theta -> params%theta  (asymmetry, same field as standard NAGARCH)
+    !   lam   -> params%gamma  (risk premium on conditional volatility)
+    !   mu    -> params%twist  (constant mean of excess return)
+    !
+    ! Unconstrained: p(1)=mu, p(2)=lam (both free),
+    !                p(3:6) -> (omega,alpha,beta,theta) via NAGARCH softmax.
+    !
+    ! Key gradient insight: defining kappa_m = beta - alpha*(lam+theta)*news/sqrth,
+    ! all six dh/dphi recurrences share the same propagation factor kappa_m,
+    ! differing only in their direct forcing terms:
+    !   dh/dmu  : forcing = -2*alpha*news
+    !   dh/dlam : forcing = -2*alpha*news*sqrth
+    !   dh/dth  : forcing = -2*alpha*news*sqrth  (same as lam)
+    !   dh/dom  : forcing = 1
+    !   dh/dal  : forcing = news^2
+    !   dh/dbe  : forcing = h
+
+    subroutine nagarch_m_transform(p, mu, lam, omega, alpha, beta, theta)
+        real(dp), intent(in)  :: p(nagarch_m_np)
+        real(dp), intent(out) :: mu, lam, omega, alpha, beta, theta
+        mu  = p(1)
+        lam = p(2)
+        call nagarch_transform(p(3:6), omega, alpha, beta, theta)
+    end subroutine nagarch_m_transform
+
+    subroutine nagarch_m_inv_transform(mu, lam, omega, alpha, beta, theta, p)
+        real(dp), intent(in)  :: mu, lam, omega, alpha, beta, theta
+        real(dp), intent(out) :: p(nagarch_m_np)
+        p(1) = mu
+        p(2) = lam
+        call nagarch_inv_transform(omega, alpha, beta, theta, p(3:6))
+    end subroutine nagarch_m_inv_transform
+
+    subroutine nagarch_m_obj(p, np, f, g)
+        integer,  intent(in)  :: np
+        real(dp), intent(in)  :: p(np)
+        real(dp), intent(out) :: f, g(np)
+        real(dp) :: mu, lam, omega, alpha, beta, theta
+        real(dp) :: h, sqrth, eps, news, kappa_m, fh, fe, lam_ov_2sqrth
+        real(dp) :: h_unc, s2, D, aa, dmom
+        real(dp) :: dh_mu, dh_lam, dh_om, dh_al, dh_be, dh_th
+        real(dp) :: de_mu, de_lam, de_om, de_al, de_be, de_th
+        real(dp) :: grd_mu, grd_lam, grd_om, grd_al, grd_be, grd_th
+        integer  :: t
+
+        call nagarch_m_transform(p, mu, lam, omega, alpha, beta, theta)
+        ! standard (non-zero-above-shift) moments: s2 = 1+theta^2, dmom = 2*theta
+        s2   = 1.0_dp + theta**2
+        dmom = 2.0_dp * theta
+        D    = max(1.0_dp - alpha*s2 - beta, 1.0e-8_dp)
+        h_unc = omega / D
+        aa    = alpha * s2
+
+        h      = h_unc
+        sqrth  = sqrt(h)
+        dh_mu  = 0.0_dp;   dh_lam = 0.0_dp
+        dh_om  = 1.0_dp / D
+        dh_al  = h_unc * s2 / D
+        dh_be  = h_unc / D
+        dh_th  = alpha * dmom * h_unc / D
+
+        eps = gm_obs(1) - mu - lam*sqrth
+        lam_ov_2sqrth = lam / (2.0_dp * sqrth)
+        de_mu  = -1.0_dp - lam_ov_2sqrth * dh_mu
+        de_lam = -sqrth  - lam_ov_2sqrth * dh_lam
+        de_om  =         - lam_ov_2sqrth * dh_om
+        de_al  =         - lam_ov_2sqrth * dh_al
+        de_be  =         - lam_ov_2sqrth * dh_be
+        de_th  =         - lam_ov_2sqrth * dh_th
+
+        f = real(gm_nobs, dp) * log_sqrt_2pi + 0.5_dp * (log(h) + eps**2 / h)
+        fh = 0.5_dp * (1.0_dp/h - eps**2 / h**2)
+        fe = eps / h
+        grd_mu  = fh*dh_mu  + fe*de_mu
+        grd_lam = fh*dh_lam + fe*de_lam
+        grd_om  = fh*dh_om  + fe*de_om
+        grd_al  = fh*dh_al  + fe*de_al
+        grd_be  = fh*dh_be  + fe*de_be
+        grd_th  = fh*dh_th  + fe*de_th
+
+        do t = 2, gm_nobs
+            news    = eps - theta*sqrth
+            kappa_m = beta - alpha*(lam + theta)*news / sqrth
+
+            dh_mu  = -2.0_dp*alpha*news        + kappa_m * dh_mu
+            dh_lam = -2.0_dp*alpha*news*sqrth  + kappa_m * dh_lam
+            dh_om  =  1.0_dp                   + kappa_m * dh_om
+            dh_al  =  news**2                  + kappa_m * dh_al
+            dh_be  =  h                        + kappa_m * dh_be
+            dh_th  = -2.0_dp*alpha*news*sqrth  + kappa_m * dh_th
+
+            h     = max(omega + alpha*news**2 + beta*h, 1.0e-12_dp)
+            sqrth = sqrt(h)
+            eps   = gm_obs(t) - mu - lam*sqrth
+
+            lam_ov_2sqrth = lam / (2.0_dp * sqrth)
+            de_mu  = -1.0_dp - lam_ov_2sqrth * dh_mu
+            de_lam = -sqrth  - lam_ov_2sqrth * dh_lam
+            de_om  =         - lam_ov_2sqrth * dh_om
+            de_al  =         - lam_ov_2sqrth * dh_al
+            de_be  =         - lam_ov_2sqrth * dh_be
+            de_th  =         - lam_ov_2sqrth * dh_th
+
+            f  = f + 0.5_dp * (log(h) + eps**2 / h)
+            fh = 0.5_dp * (1.0_dp/h - eps**2 / h**2)
+            fe = eps / h
+            grd_mu  = grd_mu  + fh*dh_mu  + fe*de_mu
+            grd_lam = grd_lam + fh*dh_lam + fe*de_lam
+            grd_om  = grd_om  + fh*dh_om  + fe*de_om
+            grd_al  = grd_al  + fh*dh_al  + fe*de_al
+            grd_be  = grd_be  + fh*dh_be  + fe*de_be
+            grd_th  = grd_th  + fh*dh_th  + fe*de_th
+        end do
+
+        ! chain rule: p(1)=mu, p(2)=lam unconstrained; p(3:6) via NAGARCH softmax
+        g(1) = grd_mu
+        g(2) = grd_lam
+        g(3) =  grd_om * omega
+        g(4) =  grd_al * alpha*(1.0_dp - aa) - grd_be * aa*beta
+        g(5) = -grd_al * alpha*beta           + grd_be * beta*(1.0_dp - beta)
+        g(6) =  grd_al * (-alpha*dmom) + grd_th   ! d(alpha)/d(theta) = -alpha*dmom/s2 * s2 collapsed
+
+        ! Wait — need to apply proper chain rule for g(6): p(6) = theta (direct)
+        ! d(alpha)/d(p6) = d(aa/s2)/d(theta) = -aa/s2^2 * dmom = -alpha*dmom/s2
+        ! But we already applied /s2 above. Correct formula (matching nagarch_obj g(4)):
+        g(6) = grd_al * (-alpha*dmom/s2) + grd_th
+
+        f = f / real(gm_nobs, dp)
+        g = g / real(gm_nobs, dp)
+    end subroutine nagarch_m_obj
+
+    subroutine fit_nagarch_m(y, max_iter, gtol, f_best, params, niter_best, converged_best)
+        real(dp), intent(in)  :: y(:), gtol
+        integer,  intent(in)  :: max_iter
+        real(dp), intent(out) :: f_best
+        type(garch_params_t), intent(out) :: params
+        integer,  intent(out) :: niter_best
+        logical,  intent(out) :: converged_best
+        real(dp), parameter :: garch_starts(symm_garch_np, n_start) = reshape( &
+            [1.0e-6_dp, 0.04_dp, 0.90_dp, &
+             1.0e-6_dp, 0.06_dp, 0.88_dp, &
+             5.0e-6_dp, 0.08_dp, 0.85_dp, &
+             5.0e-6_dp, 0.10_dp, 0.80_dp], [symm_garch_np, n_start])
+        real(dp), parameter :: theta_starts(n_start) = [0.5_dp, 1.0_dp, 1.5_dp, 0.0_dp]
+        real(dp), parameter :: lam_starts(n_start)   = [0.0_dp, 1.0_dp, 2.0_dp, -1.0_dp]
+        real(dp) :: p(nagarch_m_np), p0(nagarch_m_np), p_best(nagarch_m_np), f_try
+        real(dp) :: mu, lam, omega, alpha, beta, theta
+        integer  :: istart, niter_try
+        logical  :: converged_try
+
+        call garch_m_set_data(y)
+        f_best = huge(1.0_dp)
+        p_best = 0.0_dp
+        niter_best = 0
+        converged_best = .false.
+
+        do istart = 1, n_start
+            call nagarch_m_inv_transform(0.0_dp, lam_starts(istart), &
+                                         garch_starts(1,istart), garch_starts(2,istart), &
+                                         garch_starts(3,istart), theta_starts(istart), p0)
+            p = p0
+            call bfgs_minimize(nagarch_m_obj, p, nagarch_m_np, max_iter, gtol, f_try, niter_try, converged_try)
+            if (f_try < f_best) then
+                f_best = f_try
+                p_best = p
+                niter_best = niter_try
+                converged_best = converged_try
+            end if
+        end do
+
+        params = garch_params_t()
+        call nagarch_m_transform(p_best, mu, lam, omega, alpha, beta, theta)
+        params%omega = omega
+        params%alpha = alpha
+        params%beta  = beta
+        params%theta = theta   ! asymmetry (same field as standard NAGARCH)
+        params%gamma = lam     ! risk premium
+        params%twist = mu      ! constant mean
+    end subroutine fit_nagarch_m
+
+    ! ── AR(p)-GARCH(1,1) and AR(p)-NAGARCH(1,1) ──────────────────────────────
+    !
+    ! Mean equation: r_t = mu + phi_1*r_{t-1} + ... + phi_p*r_{t-p} + eps_t
+    ! GARCH:   h_t = omega + alpha*eps_{t-1}^2 + beta*h_{t-1}
+    ! NAGARCH: h_t = omega + alpha*(eps_{t-1} - theta*sqrt(h_{t-1}))^2 + beta*h_{t-1}
+    !
+    ! Pre-sample lags r_{1-p}=...=r_0=0; h_1 = unconditional variance.
+    !
+    ! Unconstrained layout: p_raw(1)=mu, p_raw(2:p+1)=phi_1..phi_p,
+    !                       p_raw(p+2:p+4) -> (omega,alpha,beta) via garch_transform
+    !                       p_raw(p+2:p+5) -> (omega,alpha,beta,theta) via nagarch_transform
+    !
+    ! All dh/dParam recurrences share the same kappa propagation for NAGARCH.
+    ! For GARCH, beta serves as the propagation factor (kappa = beta throughout).
+    !
+    ! Fitted parameters stored in garch_params_t:
+    !   twist        -> mu
+    !   theta        -> asymmetry (NAGARCH only)
+    !   omega,alpha,beta -> variance equation
+    !   ar_coefs(1:p) -> phi_1..phi_p
+
+    subroutine ar_garch_set_data(y, p)
+        ! Store observations and AR order for use by ar_garch_obj and ar_nagarch_obj.
+        real(dp), intent(in) :: y(:)  ! return series
+        integer,  intent(in) :: p     ! AR order (>= 0)
+        if (allocated(ar_garch_obs)) deallocate(ar_garch_obs)
+        ar_garch_nobs = size(y)
+        ar_garch_p    = p
+        allocate(ar_garch_obs(ar_garch_nobs))
+        ar_garch_obs  = y
+    end subroutine ar_garch_set_data
+
+    subroutine ar_garch_obj(p_raw, np, f, g)
+        ! NLL/n and analytic gradient for AR(p)-GARCH(1,1) with Gaussian innovations.
+        !
+        ! Recurrences (eps = current residual, h = current variance):
+        !   dh_t/dmu     = -2*alpha*eps_{t-1}              + beta * dh_{t-1}/dmu
+        !   dh_t/dphi_i  = -2*alpha*eps_{t-1}*r_{t-1-i}   + beta * dh_{t-1}/dphi_i
+        !   dh_t/domega  = 1                               + beta * dh_{t-1}/domega
+        !   dh_t/dalpha  = eps_{t-1}^2                     + beta * dh_{t-1}/dalpha
+        !   dh_t/dbeta   = h_{t-1}                         + beta * dh_{t-1}/dbeta
+        integer,  intent(in)  :: np         ! ar_garch_p + 3
+        real(dp), intent(in)  :: p_raw(np)  ! unconstrained parameters
+        real(dp), intent(out) :: f          ! NLL/n
+        real(dp), intent(out) :: g(np)      ! gradient of NLL/n
+        real(dp) :: mu, omega, alpha, beta, h_unc, gamma_ab
+        real(dp) :: h, eps, fh, fe, lag_val
+        real(dp) :: dh_mu, dh_om, dh_al, dh_be
+        real(dp) :: grd_mu, grd_om, grd_al, grd_be
+        real(dp), allocatable :: phi(:), dh_phi(:), grd_phi(:)
+        integer  :: t, i, pn
+
+        pn = ar_garch_p
+        allocate(phi(pn), dh_phi(pn), grd_phi(pn))
+
+        mu  = p_raw(1)
+        if (pn > 0) phi = p_raw(2:pn+1)
+        call garch_transform(p_raw(pn+2:pn+4), omega, alpha, beta)
+        gamma_ab = max(1.0_dp - alpha - beta, 1.0e-8_dp)
+        h_unc    = omega / gamma_ab
+
+        ! ── t = 1: pre-sample lags = 0, h_1 = h_unc ──────────────────────
+        h     = h_unc
+        eps   = ar_garch_obs(1) - mu
+        dh_mu = 0.0_dp;  dh_phi = 0.0_dp
+        dh_om = 1.0_dp/gamma_ab;  dh_al = h_unc/gamma_ab;  dh_be = h_unc/gamma_ab
+
+        f  = real(ar_garch_nobs, dp)*log_sqrt_2pi + 0.5_dp*(log(h) + eps**2/h)
+        fh = 0.5_dp*(1.0_dp/h - eps**2/h**2)
+        fe = eps/h
+        grd_mu  = fh*dh_mu  - fe
+        grd_phi = fh*dh_phi              ! pre-sample lags = 0
+        grd_om  = fh*dh_om
+        grd_al  = fh*dh_al
+        grd_be  = fh*dh_be
+
+        ! ── t = 2..n ───────────────────────────────────────────────────────
+        do t = 2, ar_garch_nobs
+            dh_mu = -2.0_dp*alpha*eps + beta*dh_mu
+            do i = 1, pn
+                if (t-1-i >= 1) then
+                    dh_phi(i) = -2.0_dp*alpha*eps*ar_garch_obs(t-1-i) + beta*dh_phi(i)
+                else
+                    dh_phi(i) = beta*dh_phi(i)
+                end if
+            end do
+            dh_om = 1.0_dp    + beta*dh_om
+            dh_al = eps**2    + beta*dh_al
+            dh_be = h         + beta*dh_be
+
+            h   = max(omega + alpha*eps**2 + beta*h, 1.0e-12_dp)
+            eps = ar_garch_obs(t) - mu
+            do i = 1, pn
+                if (t-i >= 1) eps = eps - phi(i)*ar_garch_obs(t-i)
+            end do
+
+            fh = 0.5_dp*(1.0_dp/h - eps**2/h**2)
+            fe = eps/h
+            f      = f      + 0.5_dp*(log(h) + eps**2/h)
+            grd_mu = grd_mu + fh*dh_mu - fe
+            do i = 1, pn
+                lag_val = 0.0_dp
+                if (t-i >= 1) lag_val = ar_garch_obs(t-i)
+                grd_phi(i) = grd_phi(i) + fh*dh_phi(i) - fe*lag_val
+            end do
+            grd_om = grd_om + fh*dh_om
+            grd_al = grd_al + fh*dh_al
+            grd_be = grd_be + fh*dh_be
+        end do
+
+        ! ── chain rule to unconstrained parameters ─────────────────────────
+        g(1) = grd_mu
+        if (pn > 0) g(2:pn+1) = grd_phi
+        g(pn+2) =  grd_om * omega
+        g(pn+3) =  grd_al * alpha*(1.0_dp - alpha) - grd_be * alpha*beta
+        g(pn+4) = -grd_al * alpha*beta              + grd_be * beta*(1.0_dp - beta)
+
+        f = f / real(ar_garch_nobs, dp)
+        g = g / real(ar_garch_nobs, dp)
+    end subroutine ar_garch_obj
+
+    subroutine ar_nagarch_obj(p_raw, np, f, g)
+        ! NLL/n and analytic gradient for AR(p)-NAGARCH(1,1) with Gaussian innovations.
+        !
+        ! news = eps_{t-1} - theta*sqrt(h_{t-1}),  kappa = beta - alpha*theta*news/sqrth
+        ! All dh/dParam recurrences share kappa as propagation factor:
+        !   dh_t/dmu     = -2*alpha*news              + kappa * dh_{t-1}/dmu
+        !   dh_t/dphi_i  = -2*alpha*news*r_{t-1-i}   + kappa * dh_{t-1}/dphi_i
+        !   dh_t/domega  = 1                          + kappa * dh_{t-1}/domega
+        !   dh_t/dalpha  = news^2                     + kappa * dh_{t-1}/dalpha
+        !   dh_t/dbeta   = h_{t-1}                    + kappa * dh_{t-1}/dbeta
+        !   dh_t/dtheta  = -2*alpha*news*sqrth        + kappa * dh_{t-1}/dtheta
+        integer,  intent(in)  :: np
+        real(dp), intent(in)  :: p_raw(np)
+        real(dp), intent(out) :: f, g(np)
+        real(dp) :: mu, omega, alpha, beta, theta
+        real(dp) :: h, sqrth, eps, r, kappa, fh, fe, lag_val
+        real(dp) :: s2, D, h_unc, aa, dmom
+        real(dp) :: dh_mu, dh_om, dh_al, dh_be, dh_th
+        real(dp) :: grd_mu, grd_om, grd_al, grd_be, grd_th
+        real(dp), allocatable :: phi(:), dh_phi(:), grd_phi(:)
+        integer  :: t, i, pn
+
+        pn = ar_garch_p
+        allocate(phi(pn), dh_phi(pn), grd_phi(pn))
+
+        mu  = p_raw(1)
+        if (pn > 0) phi = p_raw(2:pn+1)
+        call nagarch_transform(p_raw(pn+2:pn+5), omega, alpha, beta, theta)
+        s2   = 1.0_dp + theta**2
+        dmom = 2.0_dp * theta
+        D    = max(1.0_dp - alpha*s2 - beta, 1.0e-8_dp)
+        h_unc = omega / D
+        aa    = alpha * s2
+
+        ! ── t = 1: pre-sample lags = 0, h_1 = h_unc ──────────────────────
+        h     = h_unc
+        sqrth = sqrt(h)
+        eps   = ar_garch_obs(1) - mu
+        dh_mu = 0.0_dp;  dh_phi = 0.0_dp
+        dh_om = 1.0_dp/D;  dh_al = h_unc*s2/D;  dh_be = h_unc/D
+        dh_th = alpha*dmom*h_unc/D
+
+        f  = real(ar_garch_nobs, dp)*log_sqrt_2pi + 0.5_dp*(log(h) + eps**2/h)
+        fh = 0.5_dp*(1.0_dp/h - eps**2/h**2)
+        fe = eps/h
+        grd_mu  = fh*dh_mu  - fe
+        grd_phi = fh*dh_phi
+        grd_om  = fh*dh_om
+        grd_al  = fh*dh_al
+        grd_be  = fh*dh_be
+        grd_th  = fh*dh_th
+
+        ! ── t = 2..n ───────────────────────────────────────────────────────
+        do t = 2, ar_garch_nobs
+            r     = eps - theta*sqrth
+            kappa = beta - alpha*theta*r/sqrth
+
+            dh_mu = -2.0_dp*alpha*r + kappa*dh_mu
+            do i = 1, pn
+                if (t-1-i >= 1) then
+                    dh_phi(i) = -2.0_dp*alpha*r*ar_garch_obs(t-1-i) + kappa*dh_phi(i)
+                else
+                    dh_phi(i) = kappa*dh_phi(i)
+                end if
+            end do
+            dh_om = 1.0_dp                + kappa*dh_om
+            dh_al = r**2                  + kappa*dh_al
+            dh_be = h                     + kappa*dh_be
+            dh_th = -2.0_dp*alpha*r*sqrth + kappa*dh_th
+
+            h     = max(omega + alpha*r**2 + beta*h, 1.0e-12_dp)
+            sqrth = sqrt(h)
+            eps   = ar_garch_obs(t) - mu
+            do i = 1, pn
+                if (t-i >= 1) eps = eps - phi(i)*ar_garch_obs(t-i)
+            end do
+
+            fh = 0.5_dp*(1.0_dp/h - eps**2/h**2)
+            fe = eps/h
+            f      = f      + 0.5_dp*(log(h) + eps**2/h)
+            grd_mu = grd_mu + fh*dh_mu - fe
+            do i = 1, pn
+                lag_val = 0.0_dp
+                if (t-i >= 1) lag_val = ar_garch_obs(t-i)
+                grd_phi(i) = grd_phi(i) + fh*dh_phi(i) - fe*lag_val
+            end do
+            grd_om = grd_om + fh*dh_om
+            grd_al = grd_al + fh*dh_al
+            grd_be = grd_be + fh*dh_be
+            grd_th = grd_th + fh*dh_th
+        end do
+
+        ! ── chain rule ─────────────────────────────────────────────────────
+        g(1) = grd_mu
+        if (pn > 0) g(2:pn+1) = grd_phi
+        g(pn+2) =  grd_om * omega
+        g(pn+3) =  grd_al * alpha*(1.0_dp - aa) - grd_be * aa*beta
+        g(pn+4) = -grd_al * alpha*beta           + grd_be * beta*(1.0_dp - beta)
+        g(pn+5) =  grd_al * (-alpha*dmom/s2)     + grd_th
+
+        f = f / real(ar_garch_nobs, dp)
+        g = g / real(ar_garch_nobs, dp)
+    end subroutine ar_nagarch_obj
+
+    subroutine fit_ar_garch(y, ar_p, max_iter, gtol, f_best, params, niter_best, converged_best)
+        ! Fit AR(ar_p)-GARCH(1,1) by BFGS from multiple starts.
+        ! AR coefficients start at zero; GARCH part uses the same seed grid as fit_symm_garch.
+        real(dp), intent(in)  :: y(:)          ! return series
+        integer,  intent(in)  :: ar_p          ! AR order (>= 0)
+        integer,  intent(in)  :: max_iter      ! BFGS iteration limit per start
+        real(dp), intent(in)  :: gtol          ! gradient norm convergence tolerance
+        real(dp), intent(out) :: f_best        ! best NLL/n
+        type(garch_params_t), intent(out) :: params       ! fitted parameters
+        integer,  intent(out) :: niter_best    ! iterations at best start
+        logical,  intent(out) :: converged_best  ! convergence flag at best start
+        real(dp), parameter :: garch_starts(symm_garch_np, n_start) = reshape( &
+            [1.0e-6_dp, 0.04_dp, 0.90_dp, &
+             1.0e-6_dp, 0.06_dp, 0.88_dp, &
+             5.0e-6_dp, 0.08_dp, 0.85_dp, &
+             5.0e-6_dp, 0.10_dp, 0.80_dp], [symm_garch_np, n_start])
+        integer :: np, istart, niter_try
+        real(dp), allocatable :: p(:), p0(:), p_best(:), phi(:)
+        real(dp) :: f_try, omega, alpha, beta
+        logical  :: converged_try
+
+        np = ar_p + 4
+        allocate(p(np), p0(np), p_best(np), phi(ar_p))
+
+        call ar_garch_set_data(y, ar_p)
+        f_best = huge(1.0_dp);  p_best = 0.0_dp;  niter_best = 0;  converged_best = .false.
+
+        do istart = 1, n_start
+            p0(1) = 0.0_dp
+            if (ar_p > 0) p0(2:ar_p+1) = 0.0_dp
+            call garch_inv_transform(garch_starts(1,istart), garch_starts(2,istart), &
+                                     garch_starts(3,istart), p0(ar_p+2:ar_p+4))
+            p = p0
+            call bfgs_minimize(ar_garch_obj, p, np, max_iter, gtol, f_try, niter_try, converged_try)
+            if (f_try < f_best) then
+                f_best = f_try;  p_best = p;  niter_best = niter_try;  converged_best = converged_try
+            end if
+        end do
+
+        params = garch_params_t()
+        params%twist = p_best(1)
+        if (ar_p > 0) phi = p_best(2:ar_p+1)
+        call garch_transform(p_best(ar_p+2:ar_p+4), omega, alpha, beta)
+        params%omega = omega;  params%alpha = alpha;  params%beta = beta
+        if (ar_p > 0) then
+            allocate(params%ar_coefs(ar_p))
+            params%ar_coefs = phi
+        end if
+    end subroutine fit_ar_garch
+
+    subroutine fit_ar_nagarch(y, ar_p, max_iter, gtol, f_best, params, niter_best, converged_best)
+        ! Fit AR(ar_p)-NAGARCH(1,1) by BFGS from multiple starts.
+        ! AR coefficients start at zero; NAGARCH part uses the same seed grid as fit_nagarch.
+        real(dp), intent(in)  :: y(:)          ! return series
+        integer,  intent(in)  :: ar_p          ! AR order (>= 0)
+        integer,  intent(in)  :: max_iter      ! BFGS iteration limit per start
+        real(dp), intent(in)  :: gtol          ! gradient norm convergence tolerance
+        real(dp), intent(out) :: f_best        ! best NLL/n
+        type(garch_params_t), intent(out) :: params       ! fitted parameters
+        integer,  intent(out) :: niter_best    ! iterations at best start
+        logical,  intent(out) :: converged_best  ! convergence flag at best start
+        real(dp), parameter :: garch_starts(symm_garch_np, n_start) = reshape( &
+            [1.0e-6_dp, 0.04_dp, 0.90_dp, &
+             1.0e-6_dp, 0.06_dp, 0.88_dp, &
+             5.0e-6_dp, 0.08_dp, 0.85_dp, &
+             5.0e-6_dp, 0.10_dp, 0.80_dp], [symm_garch_np, n_start])
+        real(dp), parameter :: theta_starts(n_start) = [0.5_dp, 1.0_dp, 1.5_dp, 0.0_dp]
+        integer :: np, istart, niter_try
+        real(dp), allocatable :: p(:), p0(:), p_best(:), phi(:)
+        real(dp) :: f_try, omega, alpha, beta, theta
+        logical  :: converged_try
+
+        np = ar_p + 5
+        allocate(p(np), p0(np), p_best(np), phi(ar_p))
+
+        call ar_garch_set_data(y, ar_p)
+        f_best = huge(1.0_dp);  p_best = 0.0_dp;  niter_best = 0;  converged_best = .false.
+
+        do istart = 1, n_start
+            p0(1) = 0.0_dp
+            if (ar_p > 0) p0(2:ar_p+1) = 0.0_dp
+            call nagarch_inv_transform(garch_starts(1,istart), garch_starts(2,istart), &
+                                       garch_starts(3,istart), theta_starts(istart), &
+                                       p0(ar_p+2:ar_p+5))
+            p = p0
+            call bfgs_minimize(ar_nagarch_obj, p, np, max_iter, gtol, f_try, niter_try, converged_try)
+            if (f_try < f_best) then
+                f_best = f_try;  p_best = p;  niter_best = niter_try;  converged_best = converged_try
+            end if
+        end do
+
+        params = garch_params_t()
+        params%twist = p_best(1)
+        if (ar_p > 0) phi = p_best(2:ar_p+1)
+        call nagarch_transform(p_best(ar_p+2:ar_p+5), omega, alpha, beta, theta)
+        params%omega = omega;  params%alpha = alpha;  params%beta = beta;  params%theta = theta
+        if (ar_p > 0) then
+            allocate(params%ar_coefs(ar_p))
+            params%ar_coefs = phi
+        end if
+    end subroutine fit_ar_nagarch
+
+    subroutine ar_garch_t_obj(p_raw, np, f, g)
+        ! NLL/n and analytic gradient for AR(p)-GARCH(1,1) with Student-t innovations.
+        ! Layout: p_raw(1)=mu, p_raw(2:p+1)=phi, p_raw(p+2:p+4)=garch_softmax, p_raw(p+5)=log(nu-2).
+        integer,  intent(in)  :: np         ! ar_p + 5
+        real(dp), intent(in)  :: p_raw(np)  ! unconstrained parameters
+        real(dp), intent(out) :: f          ! NLL/n
+        real(dp), intent(out) :: g(np)      ! gradient of NLL/n
+        real(dp) :: mu, omega, alpha, beta, nu, nu_m2, gamma_ab, h_unc
+        real(dp) :: h, eps, u, fh, fe, lag_val
+        real(dp) :: dh_mu, dh_om, dh_al, dh_be
+        real(dp) :: grd_mu, grd_om, grd_al, grd_be, grd_nu
+        real(dp), allocatable :: phi(:), dh_phi(:), grd_phi(:)
+        integer  :: t, i, pn
+
+        pn = ar_garch_p
+        allocate(phi(pn), dh_phi(pn), grd_phi(pn))
+
+        mu  = p_raw(1)
+        if (pn > 0) phi = p_raw(2:pn+1)
+        call garch_transform(p_raw(pn+2:pn+4), omega, alpha, beta)
+        nu    = exp(p_raw(np)) + 2.0_dp
+        nu_m2 = nu - 2.0_dp
+        gamma_ab = max(1.0_dp - alpha - beta, 1.0e-8_dp)
+        h_unc    = omega / gamma_ab
+
+        h     = h_unc
+        eps   = ar_garch_obs(1) - mu
+        dh_mu = 0.0_dp;  dh_phi = 0.0_dp
+        dh_om = 1.0_dp/gamma_ab;  dh_al = h_unc/gamma_ab;  dh_be = h_unc/gamma_ab
+
+        f = -figarch_t_logdens(eps, h, nu)
+        u  = eps**2 / (nu_m2 * h)
+        fh = 0.5_dp/h * (1.0_dp - (nu + 1.0_dp)*u/(1.0_dp + u))
+        fe = (nu + 1.0_dp)*eps / (nu_m2 * h * (1.0_dp + u))
+        grd_mu  = fh*dh_mu  - fe
+        grd_phi = fh*dh_phi
+        grd_om  = fh*dh_om
+        grd_al  = fh*dh_al
+        grd_be  = fh*dh_be
+        grd_nu  = -figarch_t_logdens_dnu(eps, h, nu)
+
+        do t = 2, ar_garch_nobs
+            dh_mu = -2.0_dp*alpha*eps + beta*dh_mu
+            do i = 1, pn
+                if (t-1-i >= 1) then
+                    dh_phi(i) = -2.0_dp*alpha*eps*ar_garch_obs(t-1-i) + beta*dh_phi(i)
+                else
+                    dh_phi(i) = beta*dh_phi(i)
+                end if
+            end do
+            dh_om = 1.0_dp    + beta*dh_om
+            dh_al = eps**2    + beta*dh_al
+            dh_be = h         + beta*dh_be
+            h   = max(omega + alpha*eps**2 + beta*h, 1.0e-12_dp)
+            eps = ar_garch_obs(t) - mu
+            do i = 1, pn
+                if (t-i >= 1) eps = eps - phi(i)*ar_garch_obs(t-i)
+            end do
+            f  = f - figarch_t_logdens(eps, h, nu)
+            u  = eps**2 / (nu_m2 * h)
+            fh = 0.5_dp/h * (1.0_dp - (nu + 1.0_dp)*u/(1.0_dp + u))
+            fe = (nu + 1.0_dp)*eps / (nu_m2 * h * (1.0_dp + u))
+            grd_mu = grd_mu + fh*dh_mu - fe
+            do i = 1, pn
+                lag_val = 0.0_dp
+                if (t-i >= 1) lag_val = ar_garch_obs(t-i)
+                grd_phi(i) = grd_phi(i) + fh*dh_phi(i) - fe*lag_val
+            end do
+            grd_om = grd_om + fh*dh_om
+            grd_al = grd_al + fh*dh_al
+            grd_be = grd_be + fh*dh_be
+            grd_nu = grd_nu - figarch_t_logdens_dnu(eps, h, nu)
+        end do
+
+        g(1) = grd_mu
+        if (pn > 0) g(2:pn+1) = grd_phi
+        g(pn+2) =  grd_om * omega
+        g(pn+3) =  grd_al * alpha*(1.0_dp - alpha) - grd_be * alpha*beta
+        g(pn+4) = -grd_al * alpha*beta              + grd_be * beta*(1.0_dp - beta)
+        g(np)   =  grd_nu * (nu - 2.0_dp)    ! d(nu)/d(p_nu) = nu-2
+
+        f = f / real(ar_garch_nobs, dp)
+        g = g / real(ar_garch_nobs, dp)
+    end subroutine ar_garch_t_obj
+
+    subroutine ar_gjr_obj(p_raw, np, f, g)
+        ! NLL/n and analytic gradient for AR(p)-GJR-GARCH(1,1) with Gaussian innovations.
+        ! Layout: p_raw(1)=mu, p_raw(2:p+1)=phi, p_raw(p+2:p+5)=gjr_softmax(omega,alpha,gamma,beta).
+        ! Indicator: I(eps_{t-1} < 0) applied to AR residual.
+        integer,  intent(in)  :: np
+        real(dp), intent(in)  :: p_raw(np)
+        real(dp), intent(out) :: f, g(np)
+        real(dp) :: mu, omega, alpha, gamma, beta, g2, D, h_unc
+        real(dp) :: h, eps, ind, fh, fe, lag_val
+        real(dp) :: dh_mu, dh_om, dh_al, dh_ga, dh_be
+        real(dp) :: grd_mu, grd_om, grd_al, grd_ga, grd_be
+        real(dp), allocatable :: phi(:), dh_phi(:), grd_phi(:)
+        integer  :: t, i, pn
+
+        pn = ar_garch_p
+        allocate(phi(pn), dh_phi(pn), grd_phi(pn))
+
+        mu  = p_raw(1)
+        if (pn > 0) phi = p_raw(2:pn+1)
+        call gjr_transform(p_raw(pn+2:pn+5), omega, alpha, gamma, beta)
+        g2    = 0.5_dp * gamma
+        D     = max(1.0_dp - alpha - g2 - beta, 1.0e-8_dp)
+        h_unc = omega / D
+
+        h     = h_unc
+        eps   = ar_garch_obs(1) - mu
+        dh_mu = 0.0_dp;  dh_phi = 0.0_dp
+        dh_om = 1.0_dp/D;  dh_al = h_unc/D;  dh_ga = h_unc/(2.0_dp*D);  dh_be = h_unc/D
+
+        f  = real(ar_garch_nobs, dp)*log_sqrt_2pi + 0.5_dp*(log(h) + eps**2/h)
+        fh = 0.5_dp*(1.0_dp/h - eps**2/h**2)
+        fe = eps/h
+        grd_mu  = fh*dh_mu  - fe
+        grd_phi = fh*dh_phi
+        grd_om  = fh*dh_om
+        grd_al  = fh*dh_al
+        grd_ga  = fh*dh_ga
+        grd_be  = fh*dh_be
+
+        do t = 2, ar_garch_nobs
+            ind = merge(1.0_dp, 0.0_dp, eps < 0.0_dp)
+            dh_mu = -2.0_dp*(alpha + gamma*ind)*eps + beta*dh_mu
+            do i = 1, pn
+                if (t-1-i >= 1) then
+                    dh_phi(i) = -2.0_dp*(alpha + gamma*ind)*eps*ar_garch_obs(t-1-i) + beta*dh_phi(i)
+                else
+                    dh_phi(i) = beta*dh_phi(i)
+                end if
+            end do
+            dh_om = 1.0_dp          + beta*dh_om
+            dh_al = eps**2          + beta*dh_al
+            dh_ga = ind*eps**2      + beta*dh_ga
+            dh_be = h               + beta*dh_be
+            h   = max(omega + (alpha + gamma*ind)*eps**2 + beta*h, 1.0e-12_dp)
+            eps = ar_garch_obs(t) - mu
+            do i = 1, pn
+                if (t-i >= 1) eps = eps - phi(i)*ar_garch_obs(t-i)
+            end do
+            fh = 0.5_dp*(1.0_dp/h - eps**2/h**2)
+            fe = eps/h
+            f      = f      + 0.5_dp*(log(h) + eps**2/h)
+            grd_mu = grd_mu + fh*dh_mu - fe
+            do i = 1, pn
+                lag_val = 0.0_dp
+                if (t-i >= 1) lag_val = ar_garch_obs(t-i)
+                grd_phi(i) = grd_phi(i) + fh*dh_phi(i) - fe*lag_val
+            end do
+            grd_om = grd_om + fh*dh_om
+            grd_al = grd_al + fh*dh_al
+            grd_ga = grd_ga + fh*dh_ga
+            grd_be = grd_be + fh*dh_be
+        end do
+
+        g(1) = grd_mu
+        if (pn > 0) g(2:pn+1) = grd_phi
+        g(pn+2) =  grd_om * omega
+        g(pn+3) =  alpha * (grd_al*(1.0_dp-alpha) - 2.0_dp*grd_ga*g2 - grd_be*beta)
+        g(pn+4) =  g2    * (-grd_al*alpha + 2.0_dp*grd_ga*(1.0_dp-g2) - grd_be*beta)
+        g(pn+5) =  beta  * (-grd_al*alpha - 2.0_dp*grd_ga*g2 + grd_be*(1.0_dp-beta))
+
+        f = f / real(ar_garch_nobs, dp)
+        g = g / real(ar_garch_nobs, dp)
+    end subroutine ar_gjr_obj
+
+    subroutine ar_nagarch_t_obj(p_raw, np, f, g)
+        ! NLL/n and analytic gradient for AR(p)-NAGARCH(1,1) with Student-t innovations.
+        ! Layout: p_raw(1)=mu, p_raw(2:p+1)=phi, p_raw(p+2:p+5)=nagarch_softmax, p_raw(p+6)=log(nu-2).
+        integer,  intent(in)  :: np
+        real(dp), intent(in)  :: p_raw(np)
+        real(dp), intent(out) :: f, g(np)
+        real(dp) :: mu, omega, alpha, beta, theta, nu, nu_m2
+        real(dp) :: h, sqrth, eps, r, kappa, u, fh, fe, lag_val
+        real(dp) :: s2, D, h_unc, aa, dmom
+        real(dp) :: dh_mu, dh_om, dh_al, dh_be, dh_th
+        real(dp) :: grd_mu, grd_om, grd_al, grd_be, grd_th, grd_nu
+        real(dp), allocatable :: phi(:), dh_phi(:), grd_phi(:)
+        integer  :: t, i, pn
+
+        pn = ar_garch_p
+        allocate(phi(pn), dh_phi(pn), grd_phi(pn))
+
+        mu  = p_raw(1)
+        if (pn > 0) phi = p_raw(2:pn+1)
+        call nagarch_transform(p_raw(pn+2:pn+5), omega, alpha, beta, theta)
+        nu    = exp(p_raw(np)) + 2.0_dp
+        nu_m2 = nu - 2.0_dp
+        s2   = 1.0_dp + theta**2
+        dmom = 2.0_dp * theta
+        D    = max(1.0_dp - alpha*s2 - beta, 1.0e-8_dp)
+        h_unc = omega / D
+        aa    = alpha * s2
+
+        h     = h_unc
+        sqrth = sqrt(h)
+        eps   = ar_garch_obs(1) - mu
+        dh_mu = 0.0_dp;  dh_phi = 0.0_dp
+        dh_om = 1.0_dp/D;  dh_al = h_unc*s2/D;  dh_be = h_unc/D
+        dh_th = alpha*dmom*h_unc/D
+
+        f = -figarch_t_logdens(eps, h, nu)
+        u  = eps**2 / (nu_m2 * h)
+        fh = 0.5_dp/h * (1.0_dp - (nu + 1.0_dp)*u/(1.0_dp + u))
+        fe = (nu + 1.0_dp)*eps / (nu_m2 * h * (1.0_dp + u))
+        grd_mu  = fh*dh_mu  - fe
+        grd_phi = fh*dh_phi
+        grd_om  = fh*dh_om
+        grd_al  = fh*dh_al
+        grd_be  = fh*dh_be
+        grd_th  = fh*dh_th
+        grd_nu  = -figarch_t_logdens_dnu(eps, h, nu)
+
+        do t = 2, ar_garch_nobs
+            r     = eps - theta*sqrth
+            kappa = beta - alpha*theta*r/sqrth
+
+            dh_mu = -2.0_dp*alpha*r + kappa*dh_mu
+            do i = 1, pn
+                if (t-1-i >= 1) then
+                    dh_phi(i) = -2.0_dp*alpha*r*ar_garch_obs(t-1-i) + kappa*dh_phi(i)
+                else
+                    dh_phi(i) = kappa*dh_phi(i)
+                end if
+            end do
+            dh_om = 1.0_dp                + kappa*dh_om
+            dh_al = r**2                  + kappa*dh_al
+            dh_be = h                     + kappa*dh_be
+            dh_th = -2.0_dp*alpha*r*sqrth + kappa*dh_th
+
+            h     = max(omega + alpha*r**2 + beta*h, 1.0e-12_dp)
+            sqrth = sqrt(h)
+            eps   = ar_garch_obs(t) - mu
+            do i = 1, pn
+                if (t-i >= 1) eps = eps - phi(i)*ar_garch_obs(t-i)
+            end do
+
+            f  = f - figarch_t_logdens(eps, h, nu)
+            u  = eps**2 / (nu_m2 * h)
+            fh = 0.5_dp/h * (1.0_dp - (nu + 1.0_dp)*u/(1.0_dp + u))
+            fe = (nu + 1.0_dp)*eps / (nu_m2 * h * (1.0_dp + u))
+            grd_mu = grd_mu + fh*dh_mu - fe
+            do i = 1, pn
+                lag_val = 0.0_dp
+                if (t-i >= 1) lag_val = ar_garch_obs(t-i)
+                grd_phi(i) = grd_phi(i) + fh*dh_phi(i) - fe*lag_val
+            end do
+            grd_om = grd_om + fh*dh_om
+            grd_al = grd_al + fh*dh_al
+            grd_be = grd_be + fh*dh_be
+            grd_th = grd_th + fh*dh_th
+            grd_nu = grd_nu - figarch_t_logdens_dnu(eps, h, nu)
+        end do
+
+        g(1) = grd_mu
+        if (pn > 0) g(2:pn+1) = grd_phi
+        g(pn+2) =  grd_om * omega
+        g(pn+3) =  grd_al * alpha*(1.0_dp - aa) - grd_be * aa*beta
+        g(pn+4) = -grd_al * alpha*beta           + grd_be * beta*(1.0_dp - beta)
+        g(pn+5) =  grd_al * (-alpha*dmom/s2)     + grd_th
+        g(np)   =  grd_nu * (nu - 2.0_dp)
+
+        f = f / real(ar_garch_nobs, dp)
+        g = g / real(ar_garch_nobs, dp)
+    end subroutine ar_nagarch_t_obj
+
+    subroutine ar_gjr_t_obj(p_raw, np, f, g)
+        ! NLL/n and analytic gradient for AR(p)-GJR-GARCH(1,1) with Student-t innovations.
+        ! Layout: p_raw(1)=mu, p_raw(2:p+1)=phi, p_raw(p+2:p+5)=gjr_softmax, p_raw(p+6)=log(nu-2).
+        integer,  intent(in)  :: np
+        real(dp), intent(in)  :: p_raw(np)
+        real(dp), intent(out) :: f, g(np)
+        real(dp) :: mu, omega, alpha, gamma, beta, g2, D, h_unc, nu, nu_m2
+        real(dp) :: h, eps, ind, u, fh, fe, lag_val
+        real(dp) :: dh_mu, dh_om, dh_al, dh_ga, dh_be
+        real(dp) :: grd_mu, grd_om, grd_al, grd_ga, grd_be, grd_nu
+        real(dp), allocatable :: phi(:), dh_phi(:), grd_phi(:)
+        integer  :: t, i, pn
+
+        pn = ar_garch_p
+        allocate(phi(pn), dh_phi(pn), grd_phi(pn))
+
+        mu  = p_raw(1)
+        if (pn > 0) phi = p_raw(2:pn+1)
+        call gjr_transform(p_raw(pn+2:pn+5), omega, alpha, gamma, beta)
+        nu    = exp(p_raw(np)) + 2.0_dp
+        nu_m2 = nu - 2.0_dp
+        g2    = 0.5_dp * gamma
+        D     = max(1.0_dp - alpha - g2 - beta, 1.0e-8_dp)
+        h_unc = omega / D
+
+        h     = h_unc
+        eps   = ar_garch_obs(1) - mu
+        dh_mu = 0.0_dp;  dh_phi = 0.0_dp
+        dh_om = 1.0_dp/D;  dh_al = h_unc/D;  dh_ga = h_unc/(2.0_dp*D);  dh_be = h_unc/D
+
+        f = -figarch_t_logdens(eps, h, nu)
+        u  = eps**2 / (nu_m2 * h)
+        fh = 0.5_dp/h * (1.0_dp - (nu + 1.0_dp)*u/(1.0_dp + u))
+        fe = (nu + 1.0_dp)*eps / (nu_m2 * h * (1.0_dp + u))
+        grd_mu  = fh*dh_mu  - fe
+        grd_phi = fh*dh_phi
+        grd_om  = fh*dh_om
+        grd_al  = fh*dh_al
+        grd_ga  = fh*dh_ga
+        grd_be  = fh*dh_be
+        grd_nu  = -figarch_t_logdens_dnu(eps, h, nu)
+
+        do t = 2, ar_garch_nobs
+            ind = merge(1.0_dp, 0.0_dp, eps < 0.0_dp)
+            dh_mu = -2.0_dp*(alpha + gamma*ind)*eps + beta*dh_mu
+            do i = 1, pn
+                if (t-1-i >= 1) then
+                    dh_phi(i) = -2.0_dp*(alpha + gamma*ind)*eps*ar_garch_obs(t-1-i) + beta*dh_phi(i)
+                else
+                    dh_phi(i) = beta*dh_phi(i)
+                end if
+            end do
+            dh_om = 1.0_dp          + beta*dh_om
+            dh_al = eps**2          + beta*dh_al
+            dh_ga = ind*eps**2      + beta*dh_ga
+            dh_be = h               + beta*dh_be
+            h   = max(omega + (alpha + gamma*ind)*eps**2 + beta*h, 1.0e-12_dp)
+            eps = ar_garch_obs(t) - mu
+            do i = 1, pn
+                if (t-i >= 1) eps = eps - phi(i)*ar_garch_obs(t-i)
+            end do
+            f  = f - figarch_t_logdens(eps, h, nu)
+            u  = eps**2 / (nu_m2 * h)
+            fh = 0.5_dp/h * (1.0_dp - (nu + 1.0_dp)*u/(1.0_dp + u))
+            fe = (nu + 1.0_dp)*eps / (nu_m2 * h * (1.0_dp + u))
+            grd_mu = grd_mu + fh*dh_mu - fe
+            do i = 1, pn
+                lag_val = 0.0_dp
+                if (t-i >= 1) lag_val = ar_garch_obs(t-i)
+                grd_phi(i) = grd_phi(i) + fh*dh_phi(i) - fe*lag_val
+            end do
+            grd_om = grd_om + fh*dh_om
+            grd_al = grd_al + fh*dh_al
+            grd_ga = grd_ga + fh*dh_ga
+            grd_be = grd_be + fh*dh_be
+            grd_nu = grd_nu - figarch_t_logdens_dnu(eps, h, nu)
+        end do
+
+        g(1) = grd_mu
+        if (pn > 0) g(2:pn+1) = grd_phi
+        g(pn+2) =  grd_om * omega
+        g(pn+3) =  alpha * (grd_al*(1.0_dp-alpha) - 2.0_dp*grd_ga*g2 - grd_be*beta)
+        g(pn+4) =  g2    * (-grd_al*alpha + 2.0_dp*grd_ga*(1.0_dp-g2) - grd_be*beta)
+        g(pn+5) =  beta  * (-grd_al*alpha - 2.0_dp*grd_ga*g2 + grd_be*(1.0_dp-beta))
+        g(np)   =  grd_nu * (nu - 2.0_dp)
+
+        f = f / real(ar_garch_nobs, dp)
+        g = g / real(ar_garch_nobs, dp)
+    end subroutine ar_gjr_t_obj
+
+    subroutine fit_ar_garch_t(y, ar_p, max_iter, gtol, f_best, params, niter_best, converged_best)
+        ! Fit AR(ar_p)-GARCH(1,1)-t by warm-starting from the Normal fit.
+        ! Degrees of freedom nu stored in params%extra1.
+        real(dp), intent(in)  :: y(:)          ! return series
+        integer,  intent(in)  :: ar_p          ! AR order (>= 0)
+        integer,  intent(in)  :: max_iter      ! BFGS iteration limit
+        real(dp), intent(in)  :: gtol          ! gradient norm tolerance
+        real(dp), intent(out) :: f_best        ! best NLL/n
+        type(garch_params_t), intent(out) :: params
+        integer,  intent(out) :: niter_best
+        logical,  intent(out) :: converged_best
+        real(dp), parameter :: nu_starts(n_start) = [6.0_dp, 8.0_dp, 4.0_dp, 12.0_dp]
+        type(garch_params_t) :: gauss_params
+        integer :: np, istart, niter_try, niter_g
+        real(dp), allocatable :: p(:), p0(:), p_best(:), phi(:)
+        real(dp) :: f_try, omega, alpha, beta
+        logical  :: converged_try, converged_g
+
+        call fit_ar_garch(y, ar_p, max_iter, gtol, f_try, gauss_params, niter_g, converged_g)
+        call ar_garch_set_data(y, ar_p)
+
+        np = ar_p + 5
+        allocate(p(np), p0(np), p_best(np), phi(ar_p))
+
+        p0(1) = gauss_params%twist
+        if (ar_p > 0) p0(2:ar_p+1) = gauss_params%ar_coefs
+        call garch_inv_transform(gauss_params%omega, gauss_params%alpha, gauss_params%beta, &
+                                  p0(ar_p+2:ar_p+4))
+
+        f_best = huge(1.0_dp);  p_best = 0.0_dp;  niter_best = 0;  converged_best = .false.
+        do istart = 1, n_start
+            p0(np) = log(nu_starts(istart) - 2.0_dp)
+            p = p0
+            call bfgs_minimize(ar_garch_t_obj, p, np, max_iter, gtol, f_try, niter_try, converged_try)
+            if (f_try < f_best) then
+                f_best = f_try;  p_best = p
+                niter_best = niter_try + niter_g;  converged_best = converged_try
+            end if
+        end do
+
+        params = garch_params_t()
+        params%twist = p_best(1)
+        if (ar_p > 0) phi = p_best(2:ar_p+1)
+        call garch_transform(p_best(ar_p+2:ar_p+4), omega, alpha, beta)
+        params%omega = omega;  params%alpha = alpha;  params%beta = beta
+        params%extra1 = exp(p_best(np)) + 2.0_dp
+        if (ar_p > 0) then
+            allocate(params%ar_coefs(ar_p))
+            params%ar_coefs = phi
+        end if
+    end subroutine fit_ar_garch_t
+
+    subroutine fit_ar_gjr(y, ar_p, max_iter, gtol, f_best, params, niter_best, converged_best)
+        ! Fit AR(ar_p)-GJR-GARCH(1,1) with Gaussian noise using multiple cold starts.
+        real(dp), intent(in)  :: y(:)
+        integer,  intent(in)  :: ar_p, max_iter
+        real(dp), intent(in)  :: gtol
+        real(dp), intent(out) :: f_best
+        type(garch_params_t), intent(out) :: params
+        integer,  intent(out) :: niter_best
+        logical,  intent(out) :: converged_best
+        real(dp), parameter :: gjr_starts(gjr_np, n_start) = reshape( &
+            [1.0e-6_dp, 0.04_dp, 0.04_dp, 0.90_dp, &
+             1.0e-6_dp, 0.04_dp, 0.10_dp, 0.88_dp, &
+             1.0e-6_dp, 0.06_dp, 0.15_dp, 0.84_dp, &
+             5.0e-6_dp, 0.08_dp, 0.08_dp, 0.82_dp], [gjr_np, n_start])
+        integer :: np, istart, niter_try
+        real(dp), allocatable :: p(:), p0(:), p_best(:), phi(:)
+        real(dp) :: f_try, omega, alpha, gamma, beta
+        logical  :: converged_try
+
+        np = ar_p + 5
+        allocate(p(np), p0(np), p_best(np), phi(ar_p))
+
+        call ar_garch_set_data(y, ar_p)
+        f_best = huge(1.0_dp);  p_best = 0.0_dp;  niter_best = 0;  converged_best = .false.
+
+        do istart = 1, n_start
+            p0(1) = 0.0_dp
+            if (ar_p > 0) p0(2:ar_p+1) = 0.0_dp
+            call gjr_inv_transform(gjr_starts(1,istart), gjr_starts(2,istart), &
+                                    gjr_starts(3,istart), gjr_starts(4,istart), p0(ar_p+2:ar_p+5))
+            p = p0
+            call bfgs_minimize(ar_gjr_obj, p, np, max_iter, gtol, f_try, niter_try, converged_try)
+            if (f_try < f_best) then
+                f_best = f_try;  p_best = p;  niter_best = niter_try;  converged_best = converged_try
+            end if
+        end do
+
+        params = garch_params_t()
+        params%twist = p_best(1)
+        if (ar_p > 0) phi = p_best(2:ar_p+1)
+        call gjr_transform(p_best(ar_p+2:ar_p+5), omega, alpha, gamma, beta)
+        params%omega = omega;  params%alpha = alpha;  params%gamma = gamma;  params%beta = beta
+        if (ar_p > 0) then
+            allocate(params%ar_coefs(ar_p))
+            params%ar_coefs = phi
+        end if
+    end subroutine fit_ar_gjr
+
+    subroutine fit_ar_nagarch_t(y, ar_p, max_iter, gtol, f_best, params, niter_best, converged_best)
+        ! Fit AR(ar_p)-NAGARCH(1,1)-t by warm-starting from the Normal fit.
+        ! Degrees of freedom nu stored in params%extra1.
+        real(dp), intent(in)  :: y(:)
+        integer,  intent(in)  :: ar_p, max_iter
+        real(dp), intent(in)  :: gtol
+        real(dp), intent(out) :: f_best
+        type(garch_params_t), intent(out) :: params
+        integer,  intent(out) :: niter_best
+        logical,  intent(out) :: converged_best
+        real(dp), parameter :: nu_starts(n_start) = [6.0_dp, 8.0_dp, 4.0_dp, 12.0_dp]
+        type(garch_params_t) :: gauss_params
+        integer :: np, istart, niter_try, niter_g
+        real(dp), allocatable :: p(:), p0(:), p_best(:), phi(:)
+        real(dp) :: f_try, omega, alpha, beta, theta
+        logical  :: converged_try, converged_g
+
+        call fit_ar_nagarch(y, ar_p, max_iter, gtol, f_try, gauss_params, niter_g, converged_g)
+        call ar_garch_set_data(y, ar_p)
+
+        np = ar_p + 6
+        allocate(p(np), p0(np), p_best(np), phi(ar_p))
+
+        p0(1) = gauss_params%twist
+        if (ar_p > 0) p0(2:ar_p+1) = gauss_params%ar_coefs
+        call nagarch_inv_transform(gauss_params%omega, gauss_params%alpha, gauss_params%beta, &
+                                    gauss_params%theta, p0(ar_p+2:ar_p+5))
+
+        f_best = huge(1.0_dp);  p_best = 0.0_dp;  niter_best = 0;  converged_best = .false.
+        do istart = 1, n_start
+            p0(np) = log(nu_starts(istart) - 2.0_dp)
+            p = p0
+            call bfgs_minimize(ar_nagarch_t_obj, p, np, max_iter, gtol, f_try, niter_try, converged_try)
+            if (f_try < f_best) then
+                f_best = f_try;  p_best = p
+                niter_best = niter_try + niter_g;  converged_best = converged_try
+            end if
+        end do
+
+        params = garch_params_t()
+        params%twist = p_best(1)
+        if (ar_p > 0) phi = p_best(2:ar_p+1)
+        call nagarch_transform(p_best(ar_p+2:ar_p+5), omega, alpha, beta, theta)
+        params%omega = omega;  params%alpha = alpha;  params%beta = beta;  params%theta = theta
+        params%extra1 = exp(p_best(np)) + 2.0_dp
+        if (ar_p > 0) then
+            allocate(params%ar_coefs(ar_p))
+            params%ar_coefs = phi
+        end if
+    end subroutine fit_ar_nagarch_t
+
+    subroutine fit_ar_gjr_t(y, ar_p, max_iter, gtol, f_best, params, niter_best, converged_best)
+        ! Fit AR(ar_p)-GJR-GARCH(1,1)-t by warm-starting from the Normal GJR fit.
+        ! GJR asymmetry in params%gamma; degrees of freedom nu in params%extra1.
+        real(dp), intent(in)  :: y(:)
+        integer,  intent(in)  :: ar_p, max_iter
+        real(dp), intent(in)  :: gtol
+        real(dp), intent(out) :: f_best
+        type(garch_params_t), intent(out) :: params
+        integer,  intent(out) :: niter_best
+        logical,  intent(out) :: converged_best
+        real(dp), parameter :: nu_starts(n_start) = [6.0_dp, 8.0_dp, 4.0_dp, 12.0_dp]
+        type(garch_params_t) :: gjr_params
+        integer :: np, istart, niter_try, niter_g
+        real(dp), allocatable :: p(:), p0(:), p_best(:), phi(:)
+        real(dp) :: f_try, omega, alpha, gamma, beta
+        logical  :: converged_try, converged_g
+
+        call fit_ar_gjr(y, ar_p, max_iter, gtol, f_try, gjr_params, niter_g, converged_g)
+        call ar_garch_set_data(y, ar_p)
+
+        np = ar_p + 6
+        allocate(p(np), p0(np), p_best(np), phi(ar_p))
+
+        p0(1) = gjr_params%twist
+        if (ar_p > 0) p0(2:ar_p+1) = gjr_params%ar_coefs
+        call gjr_inv_transform(gjr_params%omega, gjr_params%alpha, gjr_params%gamma, gjr_params%beta, &
+                                p0(ar_p+2:ar_p+5))
+
+        f_best = huge(1.0_dp);  p_best = 0.0_dp;  niter_best = 0;  converged_best = .false.
+        do istart = 1, n_start
+            p0(np) = log(nu_starts(istart) - 2.0_dp)
+            p = p0
+            call bfgs_minimize(ar_gjr_t_obj, p, np, max_iter, gtol, f_try, niter_try, converged_try)
+            if (f_try < f_best) then
+                f_best = f_try;  p_best = p
+                niter_best = niter_try + niter_g;  converged_best = converged_try
+            end if
+        end do
+
+        params = garch_params_t()
+        params%twist = p_best(1)
+        if (ar_p > 0) phi = p_best(2:ar_p+1)
+        call gjr_transform(p_best(ar_p+2:ar_p+5), omega, alpha, gamma, beta)
+        params%omega = omega;  params%alpha = alpha;  params%gamma = gamma;  params%beta = beta
+        params%extra1 = exp(p_best(np)) + 2.0_dp
+        if (ar_p > 0) then
+            allocate(params%ar_coefs(ar_p))
+            params%ar_coefs = phi
+        end if
+    end subroutine fit_ar_gjr_t
 
     subroutine fit_symm_garch_pq(y, p_lag, q_lag, max_iter, gtol, f_best, params, niter_best, converged_best)
         real(dp), intent(in)  :: y(:), gtol
@@ -562,6 +1843,366 @@ contains
         params = garch_params_t()
         call fi_nagarch_transform(p_best, params%omega, params%alpha, params%theta, params%beta, params%twist)
     end subroutine fit_fi_nagarch
+
+    ! ── FIGARCH-t and FI-NAGARCH-t: Student-t innovation versions ─────────────
+    !
+    ! Parameter storage in garch_params_t (reusing existing scalar fields):
+    !   FIGARCH-t  : omega, alpha=phi, theta=d, beta, gamma=nu
+    !   FI-NAGARCH-t: omega, alpha=phi, theta=d, beta, twist=shift(theta_NAG), extra1=nu
+    !
+    ! The packed parameter p(np_t-1) (last slot) encodes nu via nu = exp(p) + 2,
+    ! ensuring nu > 2.  The variance recursion is identical to the Gaussian
+    ! versions -- only the log-likelihood and its h-gradient change.
+
+    subroutine figarch_t_transform(p, omega, phi, d, beta, nu)
+        real(dp), intent(in)  :: p(figarch_t_np)
+        real(dp), intent(out) :: omega, phi, d, beta, nu
+        call figarch_transform(p(1:figarch_np), omega, phi, d, beta)
+        nu = exp(p(5)) + 2.0_dp
+    end subroutine figarch_t_transform
+
+    subroutine figarch_t_inv_transform(omega, phi, d, beta, nu, p)
+        real(dp), intent(in)  :: omega, phi, d, beta, nu
+        real(dp), intent(out) :: p(figarch_t_np)
+        call figarch_inv_transform(omega, phi, d, beta, p(1:figarch_np))
+        p(5) = log(max(nu - 2.0_dp, 1.0e-6_dp))
+    end subroutine figarch_t_inv_transform
+
+    subroutine fi_nagarch_t_transform(p, omega, phi, d, beta, shift, nu)
+        real(dp), intent(in)  :: p(fi_nagarch_t_np)
+        real(dp), intent(out) :: omega, phi, d, beta, shift, nu
+        call fi_nagarch_transform(p(1:fi_nagarch_np), omega, phi, d, beta, shift)
+        nu = exp(p(6)) + 2.0_dp
+    end subroutine fi_nagarch_t_transform
+
+    subroutine fi_nagarch_t_inv_transform(omega, phi, d, beta, shift, nu, p)
+        real(dp), intent(in)  :: omega, phi, d, beta, shift, nu
+        real(dp), intent(out) :: p(fi_nagarch_t_np)
+        call fi_nagarch_inv_transform(omega, phi, d, beta, shift, p(1:fi_nagarch_np))
+        p(6) = log(max(nu - 2.0_dp, 1.0e-6_dp))
+    end subroutine fi_nagarch_t_inv_transform
+
+    ! t log-density for y with variance h and dof nu (standardised, unit variance).
+    ! log f = lgamma((nu+1)/2) - lgamma(nu/2) - 0.5*log(pi*(nu-2))
+    !         - 0.5*log(h) - (nu+1)/2 * log(1 + y^2/((nu-2)*h))
+    real(dp) function figarch_t_logdens(y, h, nu)
+        real(dp), intent(in) :: y, h, nu
+        real(dp) :: nu_m2
+        nu_m2 = nu - 2.0_dp
+        figarch_t_logdens = log_gamma(0.5_dp*(nu + 1.0_dp)) - log_gamma(0.5_dp*nu) &
+                          - 0.5_dp*log(nu_m2*pi) - 0.5_dp*log(max(h, 1.0e-12_dp)) &
+                          - 0.5_dp*(nu + 1.0_dp)*log(1.0_dp + y**2/(nu_m2*max(h, 1.0e-12_dp)))
+    end function figarch_t_logdens
+
+    ! d/d(nu) of figarch_t_logdens: used in grad_nu accumulation.
+    ! u = y^2 / ((nu-2)*h)
+    real(dp) function figarch_t_logdens_dnu(y, h, nu)
+        real(dp), intent(in) :: y, h, nu
+        real(dp) :: nu_m2, u
+        nu_m2 = max(nu - 2.0_dp, 0.01_dp)
+        u = y**2 / (nu_m2 * max(h, 1.0e-12_dp))
+        figarch_t_logdens_dnu = 0.5_dp*(digamma(0.5_dp*(nu + 1.0_dp)) - digamma(0.5_dp*nu)) &
+                               - 0.5_dp/nu_m2 &
+                               - 0.5_dp*log(1.0_dp + u) &
+                               + 0.5_dp*(nu + 1.0_dp)/nu_m2 * u/(1.0_dp + u)
+    end function figarch_t_logdens_dnu
+
+    real(dp) function figarch_t_value(p)
+        real(dp), intent(in) :: p(figarch_t_np)
+        type(garch_params_t) :: params
+        real(dp), allocatable :: variance(:)
+        real(dp) :: nu
+        integer :: t
+        call figarch_t_transform(p, params%omega, params%alpha, params%theta, params%beta, nu)
+        allocate(variance(figarch_nobs))
+        call figarch_variance(figarch_obs, params, variance)
+        figarch_t_value = 0.0_dp
+        do t = 1, figarch_nobs
+            figarch_t_value = figarch_t_value - figarch_t_logdens(figarch_obs(t), variance(t), nu)
+        end do
+        figarch_t_value = figarch_t_value / real(figarch_nobs, dp)
+        deallocate(variance)
+    end function figarch_t_value
+
+    real(dp) function fi_nagarch_t_value(p)
+        real(dp), intent(in) :: p(fi_nagarch_t_np)
+        type(garch_params_t) :: params
+        real(dp), allocatable :: variance(:)
+        real(dp) :: nu
+        integer :: t
+        call fi_nagarch_t_transform(p, params%omega, params%alpha, params%theta, &
+                                    params%beta, params%twist, nu)
+        allocate(variance(figarch_nobs))
+        call fi_nagarch_variance(figarch_obs, params, variance)
+        fi_nagarch_t_value = 0.0_dp
+        do t = 1, figarch_nobs
+            fi_nagarch_t_value = fi_nagarch_t_value - figarch_t_logdens(figarch_obs(t), variance(t), nu)
+        end do
+        fi_nagarch_t_value = fi_nagarch_t_value / real(figarch_nobs, dp)
+        deallocate(variance)
+    end function fi_nagarch_t_value
+
+    subroutine figarch_t_obj(p, np, f, g)
+        integer,  intent(in)  :: np
+        real(dp), intent(in)  :: p(np)
+        real(dp), intent(out) :: f, g(np)
+        real(dp), allocatable :: lambda(:), dl_dphi(:), dl_dd(:), dl_dbeta(:)
+        real(dp) :: omega, phi, d, beta, nu, nu_m2
+        real(dp) :: omega_tilde, backcast, bc_weight
+        real(dp) :: h, y, u, factor_h
+        real(dp) :: dh_om, dh_phi, dh_d, dh_beta, lag_sq
+        real(dp) :: grad_om, grad_phi, grad_d, grad_beta, grad_nu
+        real(dp) :: ud, uphi, ubeta, phi_max
+        real(dp) :: dd_dp2, dphi_dp2, dphi_dp3, dbeta_dp2, dbeta_dp3, dbeta_dp4
+        integer :: t, i, m
+
+        call figarch_t_transform(p, omega, phi, d, beta, nu)
+        nu_m2 = nu - 2.0_dp
+        m = figarch_trunc_lag
+        allocate(lambda(m), dl_dphi(m), dl_dd(m), dl_dbeta(m))
+        call figarch_weights_deriv(phi, d, beta, lambda, dl_dphi, dl_dd, dl_dbeta)
+        omega_tilde = omega / max(1.0_dp - beta, 1.0e-8_dp)
+        backcast = figarch_backcast(figarch_obs)
+
+        f = 0.0_dp
+        grad_om  = 0.0_dp;  grad_phi = 0.0_dp
+        grad_d   = 0.0_dp;  grad_beta = 0.0_dp;  grad_nu = 0.0_dp
+
+        do t = 1, figarch_nobs
+            bc_weight = 0.0_dp
+            dh_phi = 0.0_dp;  dh_d = 0.0_dp
+            dh_beta = omega / max(1.0_dp - beta, 1.0e-8_dp)**2
+            do i = t, m
+                bc_weight = bc_weight + lambda(i)
+                dh_phi  = dh_phi  + dl_dphi(i)*backcast
+                dh_d    = dh_d    + dl_dd(i)*backcast
+                dh_beta = dh_beta + dl_dbeta(i)*backcast
+            end do
+            h = omega_tilde + bc_weight*backcast
+            do i = 1, min(t - 1, m)
+                lag_sq  = figarch_obs(t - i)**2
+                h       = h       + lambda(i)*lag_sq
+                dh_phi  = dh_phi  + dl_dphi(i)*lag_sq
+                dh_d    = dh_d    + dl_dd(i)*lag_sq
+                dh_beta = dh_beta + dl_dbeta(i)*lag_sq
+            end do
+            h = max(h, 1.0e-12_dp)
+            y = figarch_obs(t)
+            u = y**2 / (nu_m2*h)
+            ! NLL contribution
+            f = f - figarch_t_logdens(y, h, nu)
+            ! d(logL)/d(h): 0.5*[-1/h + (nu+1)*u/(h*(1+u))]
+            factor_h = 0.5_dp/h * (-1.0_dp + (nu + 1.0_dp)*u/(1.0_dp + u))
+            dh_om = 1.0_dp / max(1.0_dp - beta, 1.0e-8_dp)
+            grad_om  = grad_om  - factor_h * dh_om
+            grad_phi = grad_phi - factor_h * dh_phi
+            grad_d   = grad_d   - factor_h * dh_d
+            grad_beta = grad_beta - factor_h * dh_beta
+            grad_nu  = grad_nu  - figarch_t_logdens_dnu(y, h, nu)
+        end do
+
+        ud = d
+        phi_max  = max(0.5_dp * (1.0_dp - d), 1.0e-8_dp)
+        uphi     = min(max(phi / phi_max, 1.0e-8_dp), 1.0_dp - 1.0e-8_dp)
+        ubeta    = min(max(beta / max(d + phi, 1.0e-8_dp), 1.0e-8_dp), 1.0_dp - 1.0e-8_dp)
+        dd_dp2   = ud * (1.0_dp - ud)
+        dphi_dp2 = -0.5_dp * uphi * dd_dp2
+        dphi_dp3 = phi_max * uphi * (1.0_dp - uphi)
+        dbeta_dp2 = ubeta * (dd_dp2 + dphi_dp2)
+        dbeta_dp3 = ubeta * dphi_dp3
+        dbeta_dp4 = (d + phi) * ubeta * (1.0_dp - ubeta)
+
+        g(1) = grad_om * omega
+        g(2) = grad_d*dd_dp2 + grad_phi*dphi_dp2 + grad_beta*dbeta_dp2
+        g(3) = grad_phi*dphi_dp3 + grad_beta*dbeta_dp3
+        g(4) = grad_beta*dbeta_dp4
+        g(5) = grad_nu * (nu - 2.0_dp)      ! Jacobian: d(nu)/d(p5) = nu-2
+
+        f = f / real(figarch_nobs, dp)
+        g = g / real(figarch_nobs, dp)
+        deallocate(lambda, dl_dphi, dl_dd, dl_dbeta)
+    end subroutine figarch_t_obj
+
+    subroutine fi_nagarch_t_obj(p, np, f, g)
+        integer,  intent(in)  :: np
+        real(dp), intent(in)  :: p(np)
+        real(dp), intent(out) :: f, g(np)
+        real(dp), allocatable :: lambda(:), dl_dphi(:), dl_dd(:), dl_dbeta(:), news(:)
+        real(dp), allocatable :: dn_om(:), dn_phi(:), dn_d(:), dn_beta(:), dn_shift(:)
+        real(dp) :: omega, phi, d, beta, shift, nu, nu_m2
+        real(dp) :: omega_tilde, backcast, scale, dscale_shift
+        real(dp) :: h, y, sqrth, impact, u, factor_h
+        real(dp) :: dh_om, dh_phi, dh_d, dh_beta, dh_shift
+        real(dp) :: grad_om, grad_phi, grad_d, grad_beta, grad_shift, grad_nu
+        real(dp) :: ud, uphi, ubeta, phi_max
+        real(dp) :: dd_dp2, dphi_dp2, dphi_dp3, dbeta_dp2, dbeta_dp3, dbeta_dp4
+        integer :: t, i, lag, m
+
+        call fi_nagarch_t_transform(p, omega, phi, d, beta, shift, nu)
+        nu_m2 = nu - 2.0_dp
+        m = figarch_trunc_lag
+        allocate(lambda(m), dl_dphi(m), dl_dd(m), dl_dbeta(m), news(figarch_nobs))
+        allocate(dn_om(figarch_nobs), dn_phi(figarch_nobs), dn_d(figarch_nobs), &
+                 dn_beta(figarch_nobs), dn_shift(figarch_nobs))
+        call figarch_weights_deriv(phi, d, beta, lambda, dl_dphi, dl_dd, dl_dbeta)
+        omega_tilde  = omega / max(1.0_dp - beta, 1.0e-8_dp)
+        backcast     = figarch_backcast(figarch_obs)
+        scale        = 1.0_dp + shift**2
+        dscale_shift = 2.0_dp * shift
+
+        f = 0.0_dp
+        grad_om = 0.0_dp;  grad_phi = 0.0_dp;  grad_d = 0.0_dp
+        grad_beta = 0.0_dp;  grad_shift = 0.0_dp;  grad_nu = 0.0_dp
+
+        do t = 1, figarch_nobs
+            h      = omega_tilde
+            dh_om  = 1.0_dp / max(1.0_dp - beta, 1.0e-8_dp)
+            dh_phi = 0.0_dp;  dh_d = 0.0_dp
+            dh_beta = omega / max(1.0_dp - beta, 1.0e-8_dp)**2
+            dh_shift = 0.0_dp
+
+            do i = t, m
+                h       = h       + lambda(i)*backcast
+                dh_phi  = dh_phi  + dl_dphi(i)*backcast
+                dh_d    = dh_d    + dl_dd(i)*backcast
+                dh_beta = dh_beta + dl_dbeta(i)*backcast
+            end do
+            do i = 1, min(t - 1, m)
+                lag = t - i
+                h        = h        + lambda(i)*news(lag)
+                dh_om    = dh_om    + lambda(i)*dn_om(lag)
+                dh_phi   = dh_phi   + dl_dphi(i)*news(lag) + lambda(i)*dn_phi(lag)
+                dh_d     = dh_d     + dl_dd(i)*news(lag)   + lambda(i)*dn_d(lag)
+                dh_beta  = dh_beta  + dl_dbeta(i)*news(lag) + lambda(i)*dn_beta(lag)
+                dh_shift = dh_shift + lambda(i)*dn_shift(lag)
+            end do
+            h = max(h, 1.0e-12_dp)
+            y = figarch_obs(t)
+            u = y**2 / (nu_m2*h)
+            ! NLL
+            f = f - figarch_t_logdens(y, h, nu)
+            ! d(logL)/d(h)
+            factor_h = 0.5_dp/h * (-1.0_dp + (nu + 1.0_dp)*u/(1.0_dp + u))
+            grad_om    = grad_om    - factor_h * dh_om
+            grad_phi   = grad_phi   - factor_h * dh_phi
+            grad_d     = grad_d     - factor_h * dh_d
+            grad_beta  = grad_beta  - factor_h * dh_beta
+            grad_shift = grad_shift - factor_h * dh_shift
+            grad_nu    = grad_nu    - figarch_t_logdens_dnu(y, h, nu)
+
+            sqrth  = sqrt(h)
+            impact = y - shift*sqrth
+            news(t)     = impact**2 / scale
+            dn_om(t)    = -impact*shift*dh_om    / (scale*sqrth)
+            dn_phi(t)   = -impact*shift*dh_phi   / (scale*sqrth)
+            dn_d(t)     = -impact*shift*dh_d     / (scale*sqrth)
+            dn_beta(t)  = -impact*shift*dh_beta  / (scale*sqrth)
+            dn_shift(t) = 2.0_dp*impact*(-sqrth - 0.5_dp*shift*dh_shift/sqrth) / scale - &
+                          impact**2 * dscale_shift / scale**2
+        end do
+
+        ud = d
+        phi_max   = max(0.5_dp * (1.0_dp - d), 1.0e-8_dp)
+        uphi      = min(max(phi / phi_max, 1.0e-8_dp), 1.0_dp - 1.0e-8_dp)
+        ubeta     = min(max(beta / max(d + phi, 1.0e-8_dp), 1.0e-8_dp), 1.0_dp - 1.0e-8_dp)
+        dd_dp2    = ud * (1.0_dp - ud)
+        dphi_dp2  = -0.5_dp * uphi * dd_dp2
+        dphi_dp3  = phi_max * uphi * (1.0_dp - uphi)
+        dbeta_dp2 = ubeta * (dd_dp2 + dphi_dp2)
+        dbeta_dp3 = ubeta * dphi_dp3
+        dbeta_dp4 = (d + phi) * ubeta * (1.0_dp - ubeta)
+
+        g(1) = grad_om * omega
+        g(2) = grad_d*dd_dp2 + grad_phi*dphi_dp2 + grad_beta*dbeta_dp2
+        g(3) = grad_phi*dphi_dp3 + grad_beta*dbeta_dp3
+        g(4) = grad_beta*dbeta_dp4
+        g(5) = grad_shift
+        g(6) = grad_nu * (nu - 2.0_dp)      ! Jacobian: d(nu)/d(p6) = nu-2
+
+        f = f / real(figarch_nobs, dp)
+        g = g / real(figarch_nobs, dp)
+        deallocate(lambda, dl_dphi, dl_dd, dl_dbeta, news, dn_om, dn_phi, dn_d, dn_beta, dn_shift)
+    end subroutine fi_nagarch_t_obj
+
+    ! Warm-start: fit Gaussian FIGARCH first, then promote to t by adding nu.
+    ! Results stored in: omega, alpha=phi, theta=d, beta (same as Gaussian),
+    ! plus gamma=nu (unused by Gaussian FIGARCH).
+    subroutine fit_figarch_t(y, max_iter, gtol, f_best, params, niter_best, converged_best)
+        real(dp), intent(in)  :: y(:), gtol
+        integer,  intent(in)  :: max_iter
+        real(dp), intent(out) :: f_best
+        type(garch_params_t), intent(out) :: params
+        integer,  intent(out) :: niter_best
+        logical,  intent(out) :: converged_best
+        real(dp), parameter :: start_nu(n_start) = [6.0_dp, 8.0_dp, 4.0_dp, 12.0_dp]
+        type(garch_params_t) :: fig_params
+        real(dp) :: p(figarch_t_np), p0(figarch_t_np), p_best(figarch_t_np)
+        real(dp) :: f_try, f_fig
+        integer  :: istart, niter_try, niter_fig
+        logical  :: converged_try, converged_fig
+
+        call fit_figarch(y, max_iter, gtol, f_fig, fig_params, niter_fig, converged_fig)
+        call figarch_set_data(y)
+        f_best = huge(1.0_dp);  p_best = 0.0_dp
+        niter_best = 0;  converged_best = .false.
+
+        do istart = 1, n_start
+            call figarch_t_inv_transform(fig_params%omega, fig_params%alpha, fig_params%theta, &
+                                         fig_params%beta, start_nu(istart), p0)
+            p = p0
+            call bfgs_minimize(figarch_t_obj, p, figarch_t_np, max_iter, gtol, &
+                               f_try, niter_try, converged_try)
+            if (f_try < f_best) then
+                f_best = f_try;  p_best = p
+                niter_best = niter_try + niter_fig;  converged_best = converged_try
+            end if
+        end do
+
+        params = garch_params_t()
+        if (f_best < huge(1.0_dp)) &
+            call figarch_t_transform(p_best, params%omega, params%alpha, params%theta, &
+                                     params%beta, params%gamma)
+    end subroutine fit_figarch_t
+
+    ! Warm-start: fit Gaussian FI-NAGARCH first (which itself warm-starts from FIGARCH),
+    ! then promote to t by adding nu.
+    ! Results stored in: omega, alpha=phi, theta=d, beta, twist=shift, extra1=nu.
+    subroutine fit_fi_nagarch_t(y, max_iter, gtol, f_best, params, niter_best, converged_best)
+        real(dp), intent(in)  :: y(:), gtol
+        integer,  intent(in)  :: max_iter
+        real(dp), intent(out) :: f_best
+        type(garch_params_t), intent(out) :: params
+        integer,  intent(out) :: niter_best
+        logical,  intent(out) :: converged_best
+        real(dp), parameter :: start_nu(n_start) = [6.0_dp, 8.0_dp, 4.0_dp, 12.0_dp]
+        type(garch_params_t) :: fin_params
+        real(dp) :: p(fi_nagarch_t_np), p0(fi_nagarch_t_np), p_best(fi_nagarch_t_np)
+        real(dp) :: f_try, f_fin
+        integer  :: istart, niter_try, niter_fin
+        logical  :: converged_try, converged_fin
+
+        call fit_fi_nagarch(y, max_iter, gtol, f_fin, fin_params, niter_fin, converged_fin)
+        call figarch_set_data(y)
+        f_best = huge(1.0_dp);  p_best = 0.0_dp
+        niter_best = 0;  converged_best = .false.
+
+        do istart = 1, n_start
+            call fi_nagarch_t_inv_transform(fin_params%omega, fin_params%alpha, fin_params%theta, &
+                                            fin_params%beta, fin_params%twist, start_nu(istart), p0)
+            p = p0
+            call bfgs_minimize(fi_nagarch_t_obj, p, fi_nagarch_t_np, max_iter, gtol, &
+                               f_try, niter_try, converged_try)
+            if (f_try < f_best) then
+                f_best = f_try;  p_best = p
+                niter_best = niter_try + niter_fin;  converged_best = converged_try
+            end if
+        end do
+
+        params = garch_params_t()
+        if (f_best < huge(1.0_dp)) &
+            call fi_nagarch_t_transform(p_best, params%omega, params%alpha, params%theta, &
+                                        params%beta, params%twist, params%extra1)
+    end subroutine fit_fi_nagarch_t
 
     subroutine fit_harch(y, max_iter, gtol, f_best, params, niter_best, converged_best)
         real(dp), intent(in)  :: y(:), gtol
