@@ -2,6 +2,7 @@
 ! Edit the models(:) character array to choose which model rows are produced.
 
 program xfit_gen_garch_returns
+    use date_mod, only: print_program_header
     use kind_mod,       only: dp
     use strings_mod,    only: uppercase
     use csv_mod,        only: read_price_csv, print_price_sample_info
@@ -12,6 +13,7 @@ program xfit_gen_garch_returns
                                   print_vol_forecast_table, finalize_return_garch_fit
     use model_selection_mod, only: print_model_selection_counts, print_model_fit_times
     use garch_fit_mod,  only: fit_symm_garch, fit_symm_garch_pq, fit_qgarch, fit_figarch, fit_fi_nagarch, &
+                              fit_figarch_t, fit_fi_nagarch_t, fit_garch_m, &
                               fit_nagarch, fit_nagarch_pq, fit_gjr, fit_fgarch_twist, fit_aparch, fit_harch, fit_tgarch, &
                               fit_avgarch, &
                               fit_csgarch, fit_riskmetrics2006, &
@@ -26,8 +28,9 @@ program xfit_gen_garch_returns
     real(dp), parameter :: gtol = 1.0e-7_dp
     logical,  parameter :: print_vol_forecast_stats = .false.
     character(len=16), parameter :: models(*) = [character(len=16) :: &
-        "SYMM_GARCH", "SYMM_GARCH_2_1", "SYMM_GARCH_1_2", "SYMM_GARCH_2_2", &
-        "QGARCH", "FIGARCH", "FI_NAGARCH", "NAGARCH", "NAGARCH_2_1", "NAGARCH_1_2", "NAGARCH_2_2", &
+        "SYMM_GARCH", "GARCH_M", "SYMM_GARCH_2_1", "SYMM_GARCH_1_2", "SYMM_GARCH_2_2", &
+        "QGARCH", "FIGARCH", "FIGARCH_T", "FI_NAGARCH", "FI_NAGARCH_T", &
+        "NAGARCH", "NAGARCH_2_1", "NAGARCH_1_2", "NAGARCH_2_2", &
         "GJR_GARCH", "CSGARCH", "FGTWIST", "APARCH", "HARCH", "TGARCH", "AVGARCH", &
         "RM2006", "MIDASHYP", "MIDASHYP_ASYM"]
     integer, parameter :: n_model = size(models)
@@ -53,6 +56,7 @@ program xfit_gen_garch_returns
     logical, allocatable :: vf_have(:,:)
     character(len=16) :: model
 
+    call print_program_header("xfit_gen_garch_returns.f90")
     call system_clock(clock_start, clock_rate)
     print*,"max_iter:", max_iter ! debug
     call nagarch_set_news_impact(.false.)
@@ -98,6 +102,8 @@ program xfit_gen_garch_returns
             case ("SYMM_GARCH", "GARCH", "SYMM")
                 call fit_symm_garch(ret, max_iter, gtol, fopt, params, niter, converged)
                 model = "SYMM_GARCH"
+            case ("GARCH_M")
+                call fit_garch_m(ret, max_iter, gtol, fopt, params, niter, converged)
             case ("SYMM_GARCH_2_1")
                 if (max_p < 2 .or. max_q < 1) cycle
                 call fit_symm_garch_pq(ret, 2, 1, max_iter, gtol, fopt, params, niter, converged)
@@ -112,9 +118,14 @@ program xfit_gen_garch_returns
                 model = "QGARCH"
             case ("FIGARCH")
                 call fit_figarch(ret, max_iter, gtol, fopt, params, niter, converged)
+            case ("FIGARCH_T")
+                call fit_figarch_t(ret, max_iter, gtol, fopt, params, niter, converged)
             case ("FI_NAGARCH", "FINAGARCH")
                 call fit_fi_nagarch(ret, max_iter, gtol, fopt, params, niter, converged)
                 model = "FI_NAGARCH"
+            case ("FI_NAGARCH_T")
+                call fit_fi_nagarch_t(ret, max_iter, gtol, fopt, params, niter, converged)
+                model = "FI_NAGARCH_T"
             case ("NAGARCH")
                 call fit_nagarch(ret, max_iter, gtol, fopt, params, niter, converged)
             case ("NAGARCH_2_1")
