@@ -1,4 +1,5 @@
-! Small linear algebra module: Cholesky factorization, log-determinant, solve.
+! Small linear algebra module: Cholesky factorization, log-determinant, solve,
+! and Gaussian elimination with partial pivoting.
 ! All routines work on dense n x n matrices stored column-major (Fortran default).
 
 module linalg_mod
@@ -6,7 +7,7 @@ module linalg_mod
     implicit none
     private
 
-    public :: chol_factor, chol_logdet, chol_solve_vec
+    public :: chol_factor, chol_logdet, chol_solve_vec, gauss_elim
 
 contains
 
@@ -62,5 +63,42 @@ contains
             x(i) = (y(i) - dot_product(L(i+1:n,i), x(i+1:n))) / L(i,i)
         end do
     end subroutine chol_solve_vec
+
+
+    ! Solve A x = b by Gaussian elimination with partial pivoting.
+    ! A and b are overwritten on exit.
+    subroutine gauss_elim(A, b, n, x)
+        integer,  intent(in)    :: n
+        real(dp), intent(inout) :: A(n,n), b(n)
+        real(dp), intent(out)   :: x(n)
+
+        integer  :: i, j, k, pivot
+        real(dp) :: fac, tmp, max_val
+
+        do k = 1, n - 1
+            pivot   = k
+            max_val = abs(A(k,k))
+            do i = k+1, n
+                if (abs(A(i,k)) > max_val) then
+                    max_val = abs(A(i,k)); pivot = i
+                end if
+            end do
+            if (pivot /= k) then
+                do j = k, n; tmp = A(k,j); A(k,j) = A(pivot,j); A(pivot,j) = tmp; end do
+                tmp = b(k); b(k) = b(pivot); b(pivot) = tmp
+            end if
+            if (abs(A(k,k)) < 1.0e-14_dp) cycle
+            do i = k+1, n
+                fac       = A(i,k) / A(k,k)
+                A(i,k:n) = A(i,k:n) - fac * A(k,k:n)
+                b(i)      = b(i) - fac * b(k)
+            end do
+        end do
+
+        x(n) = b(n) / A(n,n)
+        do i = n-1, 1, -1
+            x(i) = (b(i) - dot_product(A(i,i+1:n), x(i+1:n))) / A(i,i)
+        end do
+    end subroutine gauss_elim
 
 end module linalg_mod
