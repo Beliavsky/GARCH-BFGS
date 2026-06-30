@@ -2,6 +2,7 @@
 ! CO is log(Open_t / Close_{t-1}); OC is log(Close_t / Open_t).
 
 program xfit_nagarch_ohlc_returns
+    use date_mod, only: print_program_header
     use kind_mod,       only: dp
     use csv_mod,        only: read_ohlc_csv, print_price_sample_info
     use stats_mod,      only: mean
@@ -46,6 +47,7 @@ program xfit_nagarch_ohlc_returns
     integer :: niter_cc, niter_cc_rg, niter_co, niter_oc, niter_co_rg, niter_oc_rg, niter_co_rng, niter_oc_rng, t
     logical :: conv_cc, conv_cc_rg, conv_co, conv_oc, conv_co_rg, conv_oc_rg, conv_co_rng, conv_oc_rng
 
+    call print_program_header("xfit_nagarch_ohlc_returns.f90")
     call system_clock(clock_start, clock_rate)
     call nagarch_set_news_impact(.false.)
     if (fit_all_assets) then
