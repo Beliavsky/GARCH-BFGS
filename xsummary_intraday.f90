@@ -4,7 +4,8 @@ program xsummary_intraday
     use kind_mod, only: dp
     use market_data_mod, only: ohlcv_series_t, read_intraday_prices_file
     use intraday_summary_mod, only: file_summary_t, scale_ret, &
-        compute_intraday_summary, print_intraday_summary, print_summary_table
+        compute_intraday_summary, print_intraday_summary, print_summary_table, &
+        print_time_gap_table, print_time_gaps
     use glob_mod, only: glob, MAX_PATH_LEN
     implicit none
 
@@ -27,6 +28,7 @@ program xsummary_intraday
         call compute_intraday_summary(trim(input_files(ifile)), series, summaries(ifile))
         summaries(ifile)%read_sec = t1 - t0
         call print_intraday_summary(summaries(ifile))
+        if (print_time_gaps) call print_time_gap_table(series%timestamp)
     end do
     deallocate(input_files)
 
