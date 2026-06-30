@@ -18,7 +18,7 @@ module fit_mcsegarch_on_intraday_mod
     implicit none
     private
 
-    character(len=*), parameter :: file_pattern = "c:\python\intraday_prices\*.csv"
+    character(len=*), parameter :: file_pattern = "c:\python\intraday_prices\*min*.csv"
     real(dp), parameter :: min_var = 1.0e-12_dp
     real(dp), parameter :: min_pdf = 1.0e-300_dp
     real(dp), parameter :: beta_abs_max = 0.999_dp
