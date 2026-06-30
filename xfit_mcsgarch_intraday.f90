@@ -7,7 +7,6 @@
 
 module fit_mcsgarch_intraday_mod
     use kind_mod, only: dp
-    use math_const_mod, only: log_sqrt_2pi
     use date_mod, only: date_label, yyyymmdd, seconds_per_minute, seconds_per_hour
     use market_data_mod, only: ohlcv_series_t, read_intraday_prices_csv, filter_intraday_session, intraday_bin_ids, &
                                default_bar_minutes, default_session_start_seconds
@@ -15,7 +14,7 @@ module fit_mcsgarch_intraday_mod
                                   fit_mcsgarch, fit_mcsgarch_nagarch, fit_mcsgarch_gjr, &
                                   fit_mcsgarch_t, fit_mcsgarch_nagarch_t, fit_mcsgarch_gjr_t, &
                                   fit_mcsgarch_fs_skewt, fit_mcsgarch_nagarch_fs_skewt, fit_mcsgarch_gjr_fs_skewt
-    use stats_mod, only: mean
+    use stats_mod, only: mean, gaussian_loglik
     use input_files_mod, only: collect_input_filenames, MAX_PATH_LEN
     use path_utils_mod, only: basename_without_extension
     implicit none
@@ -622,19 +621,6 @@ contains
         end do
         deallocate(bin_sum, bin_count)
     end subroutine bin_scaled_variance_path
-
-    ! Return the zero-mean Gaussian log likelihood for a variance path.
-    real(dp) function gaussian_loglik(returns, h)
-        real(dp), intent(in) :: returns(:), h(:)
-        integer :: i
-
-        if (size(returns) /= size(h)) error stop "gaussian_loglik: array sizes differ"
-        gaussian_loglik = 0.0_dp
-        do i = 1, size(returns)
-            gaussian_loglik = gaussian_loglik - log_sqrt_2pi - 0.5_dp*log(max(h(i), min_daily_var)) - &
-                              0.5_dp*returns(i)**2 / max(h(i), min_daily_var)
-        end do
-    end function gaussian_loglik
 
     ! Compute skewness and excess kurtosis of standardized residuals.
     subroutine standardized_residual_moments(returns, h, skew, ex_kurt)
