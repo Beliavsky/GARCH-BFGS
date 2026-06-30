@@ -19,7 +19,7 @@ module fit_mcsgarch_on_intraday_mod
     implicit none
     private
 
-    character(len=*), parameter :: file_pattern = "c:\python\databento\data_1min\*.bin" ! "c:\python\intraday_prices\*.csv"
+    character(len=*), parameter :: file_pattern = "c:\python\databento\data_1min\*spy*.bin" ! "c:\python\intraday_prices\*.csv"
     real(dp), parameter :: min_var = 1.0e-12_dp
     real(dp), parameter :: min_pdf = 1.0e-300_dp
     real(dp), parameter :: persist_max = 0.999_dp
@@ -35,9 +35,9 @@ module fit_mcsgarch_on_intraday_mod
     integer, parameter :: lambda_est = 2
     integer, parameter :: lambda_one = 3
     character(len=12), parameter :: model_names(*) = [character(len=12) :: &
-        "MCSGARCH", "MCSNAGARCH", "MCSGJRGARCH"]
+        "MCSNAGARCH"] ! "MCSGARCH", "MCSNAGARCH", "MCSGJRGARCH"]
     character(len=8), parameter :: dist_names(*) = [character(len=8) :: &
-        "NORMAL", "T", "FS_SKEWT"]
+        "NORMAL", "T"] ! "NORMAL", "T", "FS_SKEWT"]
     character(len=6), parameter :: lambda_names(*) = [character(len=6) :: &
         "ON0", "ONEST", "ON1"]
 
@@ -445,6 +445,7 @@ contains
         integer :: imodel, idist, idx0, idxest, df
         real(dp) :: lr_stat, p_value, delta_aic, delta_bic
 
+        if (size(lambda_names) /= 3) return
         print '(A)', ""
         print '(A)', "Overnight impact on next-day intraday volatility"
         print '(A)', "----------------------------------------------------------------------------------------------------"
@@ -861,9 +862,14 @@ contains
 end module fit_mcsgarch_on_intraday_mod
 
 program xfit_mcsgarch_on_intraday
+    use kind_mod, only: dp
     use date_mod, only: print_program_header
     use fit_mcsgarch_on_intraday_mod, only: run_fit_mcsgarch_on_intraday
     implicit none
+    real(dp) :: t_start, t_end
     call print_program_header("xfit_mcsgarch_on_intraday.f90")
+    call cpu_time(t_start)
     call run_fit_mcsgarch_on_intraday()
+    call cpu_time(t_end)
+    write(*,'(a,f10.3)') "Overall elapsed seconds:", t_end - t_start
 end program xfit_mcsgarch_on_intraday
