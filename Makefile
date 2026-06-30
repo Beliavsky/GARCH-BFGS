@@ -51,6 +51,10 @@ EXE48   = xfit_split_range_ohlc_iv_returns.exe
 EXE49   = xfit_arch_common.exe
 EXE50   = xfit_symm_gen_garch_returns.exe
 EXE51   = xfit_rugarch_builtin_symm_returns.exe
+EXE52   = xfit_garch_m_returns.exe
+EXE53   = xfit_ar_returns.exe
+EXE54   = xfit_ar_garch_returns.exe
+EXE55   = xfit_tvp_ar_returns.exe
 SHARED  = kind.o math_const.o garch.o bfgs.o
 OBJS    = $(SHARED) garch_main.o date.o
 OBJS2   = $(SHARED) garch_scaling.o date.o
@@ -66,32 +70,32 @@ OBJS10  = kind.o date.o strings.o csv.o xread_csv.o
 OBJS11  = kind.o date.o math_const.o special.o distributions.o garch.o bfgs.o nagarch.o \
           gjr.o egarch.o garch_flex.o strings.o csv.o rank.o xfit_spy.o
 OBJS12  = kind.o date.o math_const.o special.o distributions.o garch.o bfgs.o nagarch.o \
-          gjr.o egarch.o garch_flex.o strings.o csv.o stats.o rank.o xfit_garch_returns.o
+          gjr.o egarch.o garch_flex.o strings.o csv.o stats.o linalg.o rank.o xfit_garch_returns.o
 OBJS13  = kind.o date.o math_const.o special.o distributions.o garch.o bfgs.o nagarch.o \
-          gjr.o egarch.o garch_flex.o strings.o csv.o stats.o rank.o xfit_garch_dist_returns.o
-OBJS14  = kind.o date.o math_const.o special.o distributions.o random.o bfgs.o gas.o strings.o csv.o stats.o rank.o xfit_gas_returns.o
+          gjr.o egarch.o garch_flex.o strings.o csv.o stats.o linalg.o rank.o xfit_garch_dist_returns.o
+OBJS14  = kind.o date.o math_const.o special.o distributions.o random.o bfgs.o gas.o strings.o csv.o stats.o linalg.o rank.o xfit_gas_returns.o
 OBJS15  = kind.o date.o math_const.o special.o garch.o bfgs.o nagarch.o \
-          gjr.o egarch.o garch_flex.o distributions.o random.o gas.o strings.o csv.o stats.o rank.o xgarch_gas.o
+          gjr.o egarch.o garch_flex.o distributions.o random.o gas.o strings.o csv.o stats.o linalg.o rank.o xgarch_gas.o
 OBJS16  = kind.o date.o math_const.o special.o distributions.o random.o bfgs.o gas.o xgas_scaling.o
 OBJS17  = kind.o date.o math_const.o special.o distributions.o random.o bfgs.o gas.o \
           garch.o nagarch.o gjr.o egarch.o garch_flex.o \
           xgas_garch_scaling.o
 OBJS18  = kind.o date.o math_const.o special.o distributions.o random.o bfgs.o sv.o xsv_scaling.o
 OBJS19  = kind.o date.o math_const.o special.o distributions.o random.o bfgs.o sv.o xsv_lev_scaling.o
-OBJS20  = kind.o date.o math_const.o special.o distributions.o random.o bfgs.o sv.o strings.o csv.o stats.o rank.o xfit_sv_returns.o
+OBJS20  = kind.o date.o math_const.o special.o distributions.o random.o bfgs.o sv.o strings.o csv.o stats.o linalg.o rank.o xfit_sv_returns.o
 OBJS21  = kind.o date.o math_const.o special.o distributions.o random.o bfgs.o sv.o xsv_t_scaling.o
 OBJS22  = kind.o date.o math_const.o special.o garch.o bfgs.o nagarch.o \
           gjr.o egarch.o garch_flex.o fgarch.o distributions.o random.o sv.o \
-          strings.o csv.o stats.o rank.o xfit_sv_garch_returns.o
+          strings.o csv.o stats.o linalg.o rank.o xfit_sv_garch_returns.o
 OBJS23  = kind.o date.o math_const.o special.o distributions.o garch.o bfgs.o nagarch.o \
-          gjr.o egarch.o garch_flex.o strings.o csv.o stats.o rank.o xnagarch_mix.o
+          gjr.o egarch.o garch_flex.o strings.o csv.o stats.o linalg.o rank.o xnagarch_mix.o
 OBJS24  = kind.o date.o math_const.o special.o distributions.o garch.o bfgs.o nagarch.o \
-          gjr.o egarch.o garch_flex.o strings.o csv.o stats.o rank.o xnagarch_mix_t.o
+          gjr.o egarch.o garch_flex.o strings.o csv.o stats.o linalg.o rank.o xnagarch_mix_t.o
 OBJS25  = kind.o date.o math_const.o special.o distributions.o garch.o bfgs.o nagarch.o \
-          gjr.o egarch.o garch_flex.o strings.o csv.o stats.o rank.o xstgarch.o
-OBJS26  = kind.o date.o math_const.o garch.o bfgs.o strings.o csv.o stats.o xarch_ew.o
-OBJS27  = kind.o date.o math_const.o garch.o bfgs.o strings.o csv.o stats.o xarch_lw.o
-OBJS28  = kind.o date.o math_const.o garch.o bfgs.o strings.o csv.o stats.o xarch.o
+          gjr.o egarch.o garch_flex.o strings.o csv.o stats.o linalg.o rank.o xstgarch.o
+OBJS26  = kind.o date.o math_const.o garch.o bfgs.o strings.o csv.o stats.o linalg.o xarch_ew.o
+OBJS27  = kind.o date.o math_const.o garch.o bfgs.o strings.o csv.o stats.o linalg.o xarch_lw.o
+OBJS28  = kind.o date.o math_const.o garch.o bfgs.o strings.o csv.o stats.o linalg.o xarch.o
 OBJS29  = kind.o date.o math_const.o garch.o bfgs.o strings.o csv.o stats.o \
           linalg.o dcc.o xdcc.o
 OBJS30  = kind.o date.o math_const.o garch.o nagarch.o bfgs.o \
@@ -105,31 +109,36 @@ OBJS33  = kind.o date.o math_const.o garch.o nagarch.o bfgs.o \
 OBJS34  = kind.o date.o math_const.o garch.o nagarch.o bfgs.o \
           strings.o csv.o stats.o linalg.o dcc.o xadcc_t_vt.o
 OBJS35  = kind.o date.o math_const.o special.o nagarch.o bfgs.o \
-          strings.o csv.o stats.o distributions.o xfit_dist_returns.o
+          strings.o csv.o stats.o linalg.o distributions.o xfit_dist_returns.o
 OBJS36  = kind.o math_const.o date.o strings.o csv.o nagarch.o bfgs.o xcompare_nagarch_news.o
-OBJS37  = kind.o date.o math_const.o garch_types.o garch.o nagarch.o gjr.o egarch.o fgarch.o garch_fit.o strings.o csv.o stats.o bfgs.o xfgarch.o
-OBJS38  = kind.o date.o math_const.o garch_types.o garch.o nagarch.o gjr.o egarch.o fgarch.o garch_fit.o strings.o csv.o stats.o bfgs.o xfit_nagarch_returns.o
-OBJS39  = kind.o date.o math_const.o garch_types.o garch.o nagarch.o gjr.o egarch.o fgarch.o garch_fit.o strings.o csv.o stats.o bfgs.o xfit_gjr_returns.o
-OBJS40  = kind.o date.o math_const.o garch_types.o garch.o nagarch.o gjr.o egarch.o fgarch.o garch_fit.o strings.o csv.o stats.o bfgs.o xfit_symm_garch_returns.o
-OBJS41  = kind.o math_const.o garch_types.o strings.o date.o csv.o stats.o garch.o nagarch.o gjr.o egarch.o fgarch.o garch_fit.o garch_forecast.o model_selection.o bfgs.o xfit_gen_garch_returns.o
-OBJS42  = kind.o date.o math_const.o garch_types.o garch.o nagarch.o gjr.o egarch.o fgarch.o garch_fit.o strings.o csv.o stats.o bfgs.o xfit_egarch_returns.o
-OBJS43  = kind.o math_const.o garch_types.o strings.o date.o csv.o stats.o garch.o nagarch.o gjr.o egarch.o fgarch.o garch_fit.o model_selection.o bfgs.o xfit_gen_egarch_returns.o
-OBJS44  = kind.o math_const.o garch_types.o strings.o date.o csv.o stats.o garch.o nagarch.o gjr.o egarch.o fgarch.o garch_fit.o garch_forecast.o model_selection.o time_series_compare.o vol_forecast_compare.o bfgs.o xfit_gen_garch_iv_returns.o
-OBJS45  = kind.o math_const.o garch_types.o strings.o date.o csv.o stats.o garch.o nagarch.o gjr.o egarch.o fgarch.o garch_fit.o garch_forecast.o model_selection.o time_series_compare.o vol_forecast_compare.o bfgs.o xfit_garch_ohlc_iv_returns.o
-OBJS46  = kind.o date.o math_const.o garch_types.o garch.o nagarch.o gjr.o egarch.o fgarch.o garch_fit.o strings.o csv.o stats.o bfgs.o xfit_nagarch_ohlc_returns.o
-OBJS47  = kind.o math_const.o garch_types.o strings.o date.o csv.o stats.o nagarch.o time_series_compare.o vol_forecast_compare.o bfgs.o xfit_split_ohlc_iv_returns.o
-OBJS48  = kind.o math_const.o garch_types.o strings.o date.o csv.o stats.o nagarch.o time_series_compare.o vol_forecast_compare.o bfgs.o xfit_split_range_ohlc_iv_returns.o
-OBJS49  = kind.o math_const.o garch_types.o date.o strings.o csv.o stats.o garch.o nagarch.o gjr.o egarch.o fgarch.o garch_fit.o bfgs.o xfit_arch_common.o
-OBJS50  = kind.o math_const.o garch_types.o strings.o date.o csv.o stats.o garch.o nagarch.o gjr.o egarch.o fgarch.o garch_fit.o garch_forecast.o model_selection.o bfgs.o xfit_symm_gen_garch_returns.o
-OBJS51  = kind.o math_const.o garch_types.o date.o strings.o csv.o stats.o garch.o nagarch.o gjr.o egarch.o fgarch.o garch_fit.o garch_forecast.o model_selection.o bfgs.o xfit_rugarch_builtin_symm_returns.o
+OBJS37  = kind.o date.o math_const.o garch_types.o garch.o nagarch.o gjr.o egarch.o fgarch.o special.o garch_fit.o strings.o csv.o stats.o linalg.o bfgs.o xfgarch.o
+OBJS38  = kind.o date.o math_const.o garch_types.o garch.o nagarch.o gjr.o egarch.o fgarch.o special.o garch_fit.o strings.o csv.o stats.o linalg.o bfgs.o xfit_nagarch_returns.o
+OBJS39  = kind.o date.o math_const.o garch_types.o garch.o nagarch.o gjr.o egarch.o fgarch.o special.o garch_fit.o strings.o csv.o stats.o linalg.o bfgs.o xfit_gjr_returns.o
+OBJS40  = kind.o date.o math_const.o garch_types.o garch.o nagarch.o gjr.o egarch.o fgarch.o special.o garch_fit.o strings.o csv.o stats.o linalg.o bfgs.o xfit_symm_garch_returns.o
+OBJS41  = kind.o math_const.o garch_types.o strings.o date.o csv.o stats.o linalg.o garch.o nagarch.o gjr.o egarch.o fgarch.o special.o garch_fit.o garch_forecast.o model_selection.o bfgs.o xfit_gen_garch_returns.o
+OBJS42  = kind.o date.o math_const.o garch_types.o garch.o nagarch.o gjr.o egarch.o fgarch.o special.o garch_fit.o strings.o csv.o stats.o linalg.o bfgs.o xfit_egarch_returns.o
+OBJS43  = kind.o math_const.o garch_types.o strings.o date.o csv.o stats.o linalg.o garch.o nagarch.o gjr.o egarch.o fgarch.o special.o garch_fit.o model_selection.o bfgs.o xfit_gen_egarch_returns.o
+OBJS44  = kind.o math_const.o garch_types.o strings.o date.o csv.o stats.o linalg.o garch.o nagarch.o gjr.o egarch.o fgarch.o special.o garch_fit.o garch_forecast.o model_selection.o time_series_compare.o vol_forecast_compare.o bfgs.o xfit_gen_garch_iv_returns.o
+OBJS45  = kind.o math_const.o garch_types.o strings.o date.o csv.o stats.o linalg.o garch.o nagarch.o gjr.o egarch.o fgarch.o special.o garch_fit.o garch_forecast.o model_selection.o time_series_compare.o vol_forecast_compare.o bfgs.o xfit_garch_ohlc_iv_returns.o
+OBJS46  = kind.o date.o math_const.o garch_types.o garch.o nagarch.o gjr.o egarch.o fgarch.o special.o garch_fit.o strings.o csv.o stats.o linalg.o bfgs.o xfit_nagarch_ohlc_returns.o
+OBJS47  = kind.o math_const.o garch_types.o strings.o date.o csv.o stats.o linalg.o nagarch.o time_series_compare.o vol_forecast_compare.o bfgs.o xfit_split_ohlc_iv_returns.o
+OBJS48  = kind.o math_const.o garch_types.o strings.o date.o csv.o stats.o linalg.o nagarch.o time_series_compare.o vol_forecast_compare.o bfgs.o xfit_split_range_ohlc_iv_returns.o
+OBJS49  = kind.o math_const.o garch_types.o date.o strings.o csv.o stats.o linalg.o garch.o nagarch.o gjr.o egarch.o fgarch.o special.o garch_fit.o bfgs.o xfit_arch_common.o
+OBJS50  = kind.o math_const.o garch_types.o strings.o date.o csv.o stats.o linalg.o garch.o nagarch.o gjr.o egarch.o fgarch.o special.o garch_fit.o garch_forecast.o model_selection.o bfgs.o xfit_symm_gen_garch_returns.o
+OBJS51  = kind.o math_const.o garch_types.o date.o strings.o csv.o stats.o linalg.o garch.o nagarch.o gjr.o egarch.o fgarch.o special.o garch_fit.o garch_forecast.o model_selection.o bfgs.o xfit_rugarch_builtin_symm_returns.o
+OBJS52  = kind.o math_const.o garch_types.o strings.o date.o csv.o stats.o linalg.o garch.o nagarch.o gjr.o egarch.o fgarch.o special.o garch_fit.o bfgs.o xfit_garch_m_returns.o
+OBJS53  = kind.o math_const.o strings.o date.o csv.o stats.o linalg.o xfit_ar_returns.o
+OBJS54  = kind.o math_const.o garch_types.o strings.o date.o csv.o stats.o linalg.o garch.o nagarch.o gjr.o egarch.o fgarch.o special.o garch_fit.o bfgs.o xfit_ar_garch_returns.o
+OBJS55  = kind.o math_const.o strings.o date.o csv.o stats.o linalg.o bfgs.o xfit_tvp_ar_returns.o
 
 .PHONY: all run run_scaling run_t run_dist run_choose_dist run_nagarch run_fit_gas_returns run_gas_scaling run_gas_garch_scaling run_sv_scaling run_sv_lev_scaling run_fit_sv_returns run_sv_t_scaling run_fit_sv_garch_returns run_nagarch_mix run_nagarch_mix_t run_stgarch run_arch_ew run_arch_lw run_arch run_dcc run_adcc run_adcc_t run_dcc_vt run_adcc_vt run_adcc_t_vt run_fit_dist_returns run_compare_nagarch_news run_fgarch run_fgarch_full run_fit_nagarch_returns run_fit_gjr_returns run_fit_symm_garch_returns run_fit_gen_garch_returns run_fit_egarch_returns run_fit_gen_egarch_returns run_fit_gen_garch_iv_returns run_fit_garch_ohlc_iv_returns run_fit_nagarch_ohlc_returns run_fit_split_ohlc_iv_returns run_fit_split_range_ohlc_iv_returns run_fit_arch_common run_fit_symm_gen_garch_returns run_fit_rugarch_builtin_symm_returns clean
-.PHONY: run_xsim_garch_fit run_xsim_garch_fit_dist run_fit_gen_garch_dist_returns run_fit_gen_garch_dist_warm_returns run_fit_garch_twostep_returns run_xsim_dist run_fit_dist run_seasonal_vol_calendar run_fit_split_garch_dist_returns run_fit_split_range_garch_dist_returns run_xmcsgarch run_xread_intraday_prices run_csv_to_intraday_tick_stream run_roundtrip_intraday_tick_stream run_fit_mcsgarch_intraday run_compare_daily_intraday_garch run_compare_daily_realized_vol_forecasts run_compare_regular_allhours_rv run_correl_intraday_assets
+.PHONY: run_xsim_garch_fit run_xsim_garch_fit_dist run_fit_gen_garch_dist_returns run_fit_gen_garch_dist_warm_returns run_fit_garch_twostep_returns run_xsim_dist run_fit_dist run_seasonal_vol_calendar run_fit_split_garch_dist_returns run_fit_split_range_garch_dist_returns run_xmcsgarch run_xread_intraday_prices run_csv_to_intraday_tick_stream run_roundtrip_intraday_tick_stream run_fit_mcsgarch_intraday run_compare_daily_intraday_garch run_compare_daily_realized_vol_forecasts run_compare_regular_allhours_rv run_correl_intraday_assets run_compare_ms_garch_models
 .PHONY: run_calibrate_dist_warm_starts
 
-all: $(EXE) $(EXE2) $(EXE3) $(EXE4) $(EXE5) $(EXE6) $(EXE7) $(EXE8) $(EXE9) $(EXE10) $(EXE11) $(EXE12) $(EXE13) $(EXE14) $(EXE15) $(EXE16) $(EXE17) $(EXE18) $(EXE19) $(EXE20) $(EXE21) $(EXE22) $(EXE23) $(EXE24) $(EXE25) $(EXE26) $(EXE27) $(EXE28) $(EXE29) $(EXE30) $(EXE31) $(EXE32) $(EXE33) $(EXE34) $(EXE35) $(EXE36) $(EXE37) $(EXE38) $(EXE39) $(EXE40) $(EXE41) $(EXE42) $(EXE43) $(EXE44) $(EXE45) $(EXE46) $(EXE47) $(EXE48) $(EXE49) $(EXE50) $(EXE51)
-all: xfit_gen_garch_dist_warm_returns.exe
+all: $(EXE) $(EXE2) $(EXE3) $(EXE4) $(EXE5) $(EXE6) $(EXE7) $(EXE8) $(EXE9) $(EXE10) $(EXE11) $(EXE12) $(EXE13) $(EXE14) $(EXE15) $(EXE16) $(EXE17) $(EXE18) $(EXE19) $(EXE20) $(EXE21) $(EXE22) $(EXE23) $(EXE24) $(EXE25) $(EXE26) $(EXE27) $(EXE28) $(EXE29) $(EXE30) $(EXE31) $(EXE32) $(EXE33) $(EXE34) $(EXE35) $(EXE36) $(EXE37) $(EXE38) $(EXE39) $(EXE40) $(EXE41) $(EXE42) $(EXE43) $(EXE44) $(EXE45) $(EXE46) $(EXE47) $(EXE48) $(EXE49) $(EXE50) $(EXE51) $(EXE52) $(EXE53) $(EXE54) $(EXE55)
+all: xfit_gen_garch_dist_warm_returns.exe xrough_sv.exe
 all: xsim_garch_fit.exe xsim_garch_fit_dist.exe xfit_gen_garch_dist_returns.exe
+all: xsim_nagarch_t_model_selection.exe
 all: xfit_garch_twostep_returns.exe xfit_dist.exe xsim_dist.exe
 all: xcalibrate_dist_warm_starts.exe xseasonal_vol_calendar.exe
 all: xfit_split_garch_dist_returns.exe xfit_split_range_garch_dist_returns.exe
@@ -142,12 +151,16 @@ all: xfit_mcsgarch_on_intraday.exe xfit_mcsgarch_on_range_intraday.exe
 all: xfit_mcsegarch_on_intraday.exe xcompare_intraday_ewma_ohlc.exe
 all: xcompare_intraday_ewma_freq.exe xcompare_daily_intraday_garch.exe
 all: xcompare_daily_realized_vol_forecasts.exe xcompare_regular_allhours_rv.exe
+all: xfit_nagarchx_returns.exe xfit_nagarchx_dist.exe xfit_gen_garch_roll.exe xfit_garch_roll_period.exe xcgarch.exe
 all: xcorrel_intraday_assets.exe
 all: xmix.exe
 all: xmix_ic.exe
 all: xdiurnal_variance_baseline.exe
 all: xvar_univariate.exe
 all: xsummary_intraday.exe
+all: xfit_rfsv_intraday.exe
+all: xcompare_rv_vol_models.exe
+all: xcompare_ms_garch_models.exe
 
 $(EXE): $(OBJS)
 	$(FC) $(FFLAGS) -o $@ $^
@@ -302,31 +315,63 @@ $(EXE50): $(OBJS50)
 $(EXE51): $(OBJS51)
 	$(FC) $(FFLAGS) -o $@ $^
 
-xsim_garch_fit.exe: xsim_garch_fit.f90 kind.o date.o math_const.o garch_types.o garch.o nagarch.o gjr.o egarch.o fgarch.o garch_fit.o garch_sim.o bfgs.o
+$(EXE52): $(OBJS52)
 	$(FC) $(FFLAGS) -o $@ $^
 
-xsim_garch_fit_dist.exe: xsim_garch_fit_dist.f90 kind.o date.o math_const.o stats.o special.o distributions.o random.o \
+$(EXE53): $(OBJS53)
+	$(FC) $(FFLAGS) -o $@ $^
+
+$(EXE54): $(OBJS54)
+	$(FC) $(FFLAGS) -o $@ $^
+
+$(EXE55): $(OBJS55)
+	$(FC) $(FFLAGS) -o $@ $^
+
+xsim_garch_fit.exe: xsim_garch_fit.f90 kind.o date.o math_const.o garch_types.o garch.o nagarch.o gjr.o egarch.o fgarch.o special.o garch_fit.o garch_sim.o bfgs.o
+	$(FC) $(FFLAGS) -o $@ $^
+
+xsim_garch_fit_dist.exe: xsim_garch_fit_dist.f90 kind.o date.o math_const.o stats.o linalg.o special.o distributions.o random.o \
                          garch.o garch_t.o garch_sech.o garch_ged.o garch_laplace.o \
                          garch_logistic.o garch_nig.o garch_types.o nagarch.o gjr.o egarch.o \
-                         fgarch.o garch_fit.o garch_fit_dist.o bfgs.o
+                         fgarch.o special.o garch_fit.o garch_fit_dist.o bfgs.o
 	$(FC) $(FFLAGS) -o $@ $^
 
-xfit_gen_garch_dist_returns.exe: xfit_gen_garch_dist_returns.f90 kind.o date.o math_const.o strings.o csv.o stats.o garch_types.o special.o \
+xsim_nagarch_t_model_selection.exe: xsim_nagarch_t_model_selection.f90 kind.o math_const.o date.o strings.o stats.o linalg.o \
+                                     garch_types.o special.o distributions.o random.o \
+                                     garch.o nagarch.o gjr.o egarch.o fgarch.o special.o garch_fit.o garch_fit_dist.o \
+                                     bfgs.o msgarch.o msnagarch.o
+	$(FC) $(FFLAGS) -o $@ $^
+
+xfit_gen_garch_dist_returns.exe: xfit_gen_garch_dist_returns.f90 kind.o date.o math_const.o strings.o csv.o stats.o linalg.o garch_types.o special.o \
                                  distributions.o garch.o nagarch.o gjr.o egarch.o fgarch.o \
                                  garch_fit.o garch_fit_dist.o bfgs.o
 	$(FC) $(FFLAGS) -o $@ $^
 
-xfit_gen_garch_dist_warm_returns.exe: xfit_gen_garch_dist_warm_returns.f90 kind.o date.o math_const.o strings.o csv.o stats.o \
-                                      garch_types.o special.o distributions.o garch.o nagarch.o gjr.o \
-                                      egarch.o fgarch.o garch_fit.o garch_fit_dist.o bfgs.o
+xfit_gen_garch_roll.exe: xfit_gen_garch_roll.f90 kind.o date.o math_const.o strings.o csv.o stats.o linalg.o garch_types.o special.o \
+                         distributions.o garch.o nagarch.o gjr.o egarch.o fgarch.o \
+                         garch_fit.o garch_fit_dist.o bfgs.o
 	$(FC) $(FFLAGS) -o $@ $^
 
-xfit_garch_twostep_returns.exe: xfit_garch_twostep_returns.f90 kind.o date.o math_const.o strings.o csv.o stats.o garch_types.o special.o \
+xcgarch.exe: xcgarch.f90 kind.o date.o math_const.o strings.o csv.o stats.o linalg.o \
+             garch_types.o garch.o nagarch.o gjr.o egarch.o fgarch.o special.o garch_fit.o bfgs.o
+	$(FC) $(FFLAGS) -o $@ $^
+
+xfit_garch_roll_period.exe: xfit_garch_roll_period.f90 kind.o date.o math_const.o strings.o csv.o stats.o linalg.o garch_types.o special.o \
+                             distributions.o garch.o nagarch.o gjr.o egarch.o fgarch.o \
+                             garch_fit.o garch_fit_dist.o bfgs.o
+	$(FC) $(FFLAGS) -o $@ $^
+
+xfit_gen_garch_dist_warm_returns.exe: xfit_gen_garch_dist_warm_returns.f90 kind.o date.o math_const.o strings.o csv.o stats.o linalg.o \
+                                      garch_types.o special.o distributions.o garch.o nagarch.o gjr.o \
+                                      egarch.o fgarch.o special.o garch_fit.o garch_fit_dist.o bfgs.o
+	$(FC) $(FFLAGS) -o $@ $^
+
+xfit_garch_twostep_returns.exe: xfit_garch_twostep_returns.f90 kind.o date.o math_const.o strings.o csv.o stats.o linalg.o garch_types.o special.o \
                                 distributions.o garch.o nagarch.o gjr.o egarch.o fgarch.o \
                                 garch_fit.o garch_fit_dist.o bfgs.o
 	$(FC) $(FFLAGS) -o $@ $^
 
-xfit_dist.exe: xfit_dist.f90 kind.o date.o math_const.o strings.o csv.o stats.o rank.o special.o distributions.o bfgs.o
+xfit_dist.exe: xfit_dist.f90 kind.o date.o math_const.o strings.o csv.o stats.o linalg.o rank.o special.o distributions.o bfgs.o
 	$(FC) $(FFLAGS) -o $@ $^
 
 xsim_dist.exe: xsim_dist.f90 kind.o date.o math_const.o special.o distributions.o random.o bfgs.o
@@ -338,19 +383,19 @@ xcalibrate_dist_warm_starts.exe: xcalibrate_dist_warm_starts.f90 kind.o date.o m
 xseasonal_vol_calendar.exe: xseasonal_vol_calendar.f90 kind.o date.o strings.o csv.o stats.o linalg.o seasonal_vol.o
 	$(FC) $(FFLAGS) -o $@ $^
 
-xfit_split_garch_dist_returns.exe: xfit_split_garch_dist_returns.f90 kind.o date.o strings.o csv.o stats.o math_const.o \
+xfit_split_garch_dist_returns.exe: xfit_split_garch_dist_returns.f90 kind.o date.o strings.o csv.o stats.o linalg.o math_const.o \
                                    garch_types.o special.o distributions.o garch_fit_dist.o \
                                    garch_split_fit_dist.o garch.o nagarch.o gjr.o egarch.o fgarch.o \
                                    garch_fit.o bfgs.o
 	$(FC) $(FFLAGS) -o $@ $^
 
-xfit_split_range_garch_dist_returns.exe: xfit_split_range_garch_dist_returns.f90 kind.o date.o strings.o csv.o stats.o math_const.o \
+xfit_split_range_garch_dist_returns.exe: xfit_split_range_garch_dist_returns.f90 kind.o date.o strings.o csv.o stats.o linalg.o math_const.o \
                                          garch_types.o special.o distributions.o garch_fit_dist.o \
                                          garch_split_fit_dist.o garch.o nagarch.o gjr.o egarch.o fgarch.o \
                                          garch_fit.o bfgs.o
 	$(FC) $(FFLAGS) -o $@ $^
 
-xmcsgarch.exe: xmcsgarch.f90 kind.o date.o math_const.o special.o distributions.o stats.o bfgs.o garch_mcsgarch.o
+xmcsgarch.exe: xmcsgarch.f90 kind.o date.o math_const.o special.o distributions.o stats.o linalg.o bfgs.o garch_mcsgarch.o
 	$(FC) $(FFLAGS) -o $@ $^
 
 xread_intraday_prices.exe: xread_intraday_prices.f90 kind.o date.o strings.o path_utils.o market_data.o
@@ -368,7 +413,7 @@ xcsv_to_intraday_tick_stream.exe: xcsv_to_intraday_tick_stream.f90 kind.o glob.o
 intraday_summary.o: intraday_summary.f90 kind.o glob.o path_utils.o market_data.o stats.o
 	$(FC) $(FFLAGS) -c $<
 
-xsummary_intraday.exe: xsummary_intraday.f90 kind.o glob.o date.o strings.o path_utils.o market_data.o stats.o intraday_summary.o
+xsummary_intraday.exe: xsummary_intraday.f90 kind.o glob.o date.o strings.o path_utils.o market_data.o stats.o linalg.o intraday_summary.o
 	$(FC) $(FFLAGS) -o $@ $^
 
 xfit_intraday_tick_returns.exe: xfit_intraday_tick_returns.f90 kind.o math_const.o date.o strings.o path_utils.o market_data.o
@@ -383,43 +428,70 @@ xacf_price_changes.exe: xacf_price_changes.f90 kind.o date.o strings.o path_util
 xacf_price_ranges.exe: xacf_price_ranges.f90 kind.o date.o strings.o path_utils.o market_data.o
 	$(FC) $(FFLAGS) -o $@ $^
 
-xacf_intraday_measures.exe: xacf_intraday_measures.f90 kind.o glob.o input_files.o date.o strings.o path_utils.o market_data.o path_utils.o stats.o
+xacf_intraday_measures.exe: xacf_intraday_measures.f90 kind.o glob.o input_files.o date.o strings.o path_utils.o market_data.o path_utils.o stats.o linalg.o
 	$(FC) $(FFLAGS) -o $@ $^
 
-xcorr_signed_future_abs_price_changes.exe: xcorr_signed_future_abs_price_changes.f90 kind.o date.o strings.o path_utils.o market_data.o stats.o
+xcorr_signed_future_abs_price_changes.exe: xcorr_signed_future_abs_price_changes.f90 kind.o date.o strings.o path_utils.o market_data.o stats.o linalg.o
 	$(FC) $(FFLAGS) -o $@ $^
 
-xfit_mcsgarch_intraday.exe: xfit_mcsgarch_intraday.f90 kind.o glob.o input_files.o math_const.o special.o distributions.o date.o strings.o path_utils.o market_data.o stats.o bfgs.o garch_mcsgarch.o intraday_vol_baseline.o
+xfit_mcsgarch_intraday.exe: xfit_mcsgarch_intraday.f90 kind.o glob.o input_files.o math_const.o special.o distributions.o date.o strings.o path_utils.o market_data.o stats.o linalg.o bfgs.o garch_mcsgarch.o intraday_vol_baseline.o
 	$(FC) $(FFLAGS) -o $@ $^
 
-xfit_mcsgarch_intraday_batch.exe: xfit_mcsgarch_intraday_batch.f90 kind.o glob.o input_files.o math_const.o special.o distributions.o date.o strings.o path_utils.o market_data.o stats.o bfgs.o garch_mcsgarch.o intraday_vol_baseline.o
+xfit_mcsgarch_intraday_batch.exe: xfit_mcsgarch_intraday_batch.f90 kind.o glob.o input_files.o math_const.o special.o distributions.o date.o strings.o path_utils.o market_data.o stats.o linalg.o bfgs.o garch_mcsgarch.o intraday_vol_baseline.o
 	$(FC) $(FFLAGS) -o $@ $^
 
-xfit_mcsgarch_on_intraday.exe: xfit_mcsgarch_on_intraday.f90 kind.o glob.o input_files.o math_const.o special.o distributions.o date.o strings.o path_utils.o market_data.o stats.o bfgs.o garch_mcsgarch.o intraday_vol_baseline.o
+xfit_mcsgarch_on_intraday.exe: xfit_mcsgarch_on_intraday.f90 kind.o glob.o input_files.o math_const.o special.o distributions.o date.o strings.o path_utils.o market_data.o stats.o linalg.o bfgs.o garch_mcsgarch.o intraday_vol_baseline.o
 	$(FC) $(FFLAGS) -o $@ $^
 
-xfit_mcsgarch_on_range_intraday.exe: xfit_mcsgarch_on_range_intraday.f90 kind.o glob.o input_files.o math_const.o special.o distributions.o date.o strings.o path_utils.o market_data.o stats.o bfgs.o garch_mcsgarch.o intraday_vol_baseline.o
+xfit_mcsgarch_on_range_intraday.exe: xfit_mcsgarch_on_range_intraday.f90 kind.o glob.o input_files.o math_const.o special.o distributions.o date.o strings.o path_utils.o market_data.o stats.o linalg.o bfgs.o garch_mcsgarch.o intraday_vol_baseline.o
 	$(FC) $(FFLAGS) -o $@ $^
 
-xfit_mcsegarch_on_intraday.exe: xfit_mcsegarch_on_intraday.f90 kind.o glob.o input_files.o math_const.o special.o distributions.o date.o strings.o path_utils.o market_data.o stats.o bfgs.o garch_mcsgarch.o
+xfit_mcsegarch_on_intraday.exe: xfit_mcsegarch_on_intraday.f90 kind.o glob.o input_files.o math_const.o special.o distributions.o date.o strings.o path_utils.o market_data.o stats.o linalg.o bfgs.o garch_mcsgarch.o
 	$(FC) $(FFLAGS) -o $@ $^
 
-xcompare_intraday_ewma_ohlc.exe: xcompare_intraday_ewma_ohlc.f90 kind.o glob.o input_files.o math_const.o date.o strings.o path_utils.o market_data.o intraday_vol_baseline.o
+xcompare_intraday_ewma_ohlc.exe: xcompare_intraday_ewma_ohlc.f90 kind.o glob.o input_files.o math_const.o date.o strings.o path_utils.o market_data.o stats.o linalg.o intraday_vol_baseline.o
 	$(FC) $(FFLAGS) -o $@ $^
 
-xcompare_intraday_ewma_freq.exe: xcompare_intraday_ewma_freq.f90 kind.o glob.o input_files.o math_const.o date.o strings.o path_utils.o market_data.o intraday_vol_baseline.o
+xcompare_intraday_ewma_freq.exe: xcompare_intraday_ewma_freq.f90 kind.o glob.o input_files.o math_const.o date.o strings.o path_utils.o market_data.o stats.o linalg.o intraday_vol_baseline.o
 	$(FC) $(FFLAGS) -o $@ $^
 
 xdiurnal_variance_baseline.exe: xdiurnal_variance_baseline.f90 kind.o date.o strings.o path_utils.o market_data.o intraday_vol_baseline.o
 	$(FC) $(FFLAGS) -o $@ $^
 
-xcompare_daily_intraday_garch.exe: xcompare_daily_intraday_garch.f90 kind.o math_const.o special.o distributions.o date.o strings.o path_utils.o market_data.o stats.o program_utils.o garch_types.o garch.o nagarch.o gjr.o egarch.o fgarch.o garch_fit.o bfgs.o garch_mcsgarch.o
+xcompare_daily_intraday_garch.exe: xcompare_daily_intraday_garch.f90 kind.o math_const.o special.o distributions.o date.o strings.o path_utils.o market_data.o stats.o linalg.o program_utils.o garch_types.o garch.o nagarch.o gjr.o egarch.o fgarch.o special.o garch_fit.o bfgs.o garch_mcsgarch.o
 	$(FC) $(FFLAGS) -o $@ $^
 
-realized_vol_forecast.o: realized_vol_forecast.f90 kind.o math_const.o bfgs.o
+nagarchx.o: nagarchx.f90 kind.o math_const.o bfgs.o
+	$(FC) $(FFLAGS) -c $<
+
+nagarchx_compare.o: nagarchx_compare.f90 kind.o math_const.o date.o strings.o csv.o path_utils.o market_data.o intraday_realized_measures.o stats.o program_utils.o garch_types.o garch.o nagarch.o gjr.o egarch.o fgarch.o special.o garch_fit.o garch_forecast.o bfgs.o nagarchx.o
+	$(FC) $(FFLAGS) -c $<
+
+xfit_nagarchx_returns.exe: xfit_nagarchx_returns.f90 kind.o math_const.o date.o strings.o csv.o glob.o input_files.o path_utils.o market_data.o intraday_realized_measures.o stats.o linalg.o program_utils.o garch_types.o garch.o nagarch.o gjr.o egarch.o fgarch.o special.o garch_fit.o garch_forecast.o bfgs.o nagarchx.o nagarchx_compare.o
+	$(FC) $(FFLAGS) -o $@ $^
+
+nagarchx_t.o: nagarchx_t.f90 kind.o math_const.o distributions.o bfgs.o nagarchx.o
+	$(FC) $(FFLAGS) -c $<
+
+nagarchx_skewt.o: nagarchx_skewt.f90 kind.o math_const.o distributions.o bfgs.o nagarchx.o
+	$(FC) $(FFLAGS) -c $<
+
+nagarchx_dist_compare.o: nagarchx_dist_compare.f90 kind.o math_const.o date.o strings.o csv.o path_utils.o market_data.o intraday_realized_measures.o distributions.o stats.o program_utils.o garch_types.o garch.o nagarch.o gjr.o egarch.o fgarch.o special.o garch_fit.o garch_forecast.o bfgs.o nagarchx.o nagarchx_t.o nagarchx_skewt.o
+	$(FC) $(FFLAGS) -c $<
+
+xfit_nagarchx_dist.exe: xfit_nagarchx_dist.f90 kind.o math_const.o date.o strings.o csv.o glob.o input_files.o path_utils.o market_data.o intraday_realized_measures.o special.o distributions.o stats.o linalg.o program_utils.o garch_types.o garch.o nagarch.o gjr.o egarch.o fgarch.o special.o garch_fit.o garch_forecast.o bfgs.o nagarchx.o nagarchx_t.o nagarchx_skewt.o nagarchx_dist_compare.o
+	$(FC) $(FFLAGS) -o $@ $^
+
+realized_vol_forecast.o: realized_vol_forecast.f90 kind.o math_const.o bfgs.o linalg.o
 	$(FC) $(FFLAGS) -c $<
 
 realized_garch.o: realized_garch.f90 kind.o math_const.o bfgs.o
+	$(FC) $(FFLAGS) -c $<
+
+msgarch.o: msgarch.f90 kind.o math_const.o bfgs.o
+	$(FC) $(FFLAGS) -c $<
+
+msnagarch.o: msnagarch.f90 kind.o math_const.o bfgs.o
 	$(FC) $(FFLAGS) -c $<
 
 intraday_realized_measures.o: intraday_realized_measures.f90 kind.o date.o market_data.o
@@ -431,13 +503,30 @@ implied_vol_utils.o: implied_vol_utils.f90 kind.o date.o
 program_utils.o: program_utils.f90 kind.o
 	$(FC) $(FFLAGS) -c $<
 
-xcompare_daily_realized_vol_forecasts.exe: xcompare_daily_realized_vol_forecasts.f90 kind.o math_const.o date.o strings.o csv.o path_utils.o market_data.o intraday_realized_measures.o implied_vol_utils.o stats.o program_utils.o rank.o time_series_compare.o linalg.o regression_diagnostics.o garch_types.o garch.o nagarch.o gjr.o egarch.o fgarch.o garch_fit.o garch_forecast.o bfgs.o realized_vol_forecast.o realized_garch.o
+xcompare_daily_realized_vol_forecasts.exe: xcompare_daily_realized_vol_forecasts.f90 kind.o math_const.o date.o strings.o csv.o path_utils.o market_data.o intraday_realized_measures.o implied_vol_utils.o stats.o program_utils.o rank.o time_series_compare.o linalg.o regression_diagnostics.o garch_types.o garch.o nagarch.o gjr.o egarch.o fgarch.o special.o garch_fit.o garch_forecast.o bfgs.o realized_vol_forecast.o realized_garch.o msgarch.o msnagarch.o
 	$(FC) $(FFLAGS) -o $@ $^
 
-xcompare_regular_allhours_rv.exe: xcompare_regular_allhours_rv.f90 kind.o glob.o input_files.o math_const.o date.o strings.o path_utils.o market_data.o intraday_realized_measures.o stats.o program_utils.o bfgs.o realized_vol_forecast.o
+xcompare_regular_allhours_rv.exe: xcompare_regular_allhours_rv.f90 kind.o glob.o input_files.o math_const.o date.o strings.o path_utils.o market_data.o intraday_realized_measures.o stats.o linalg.o program_utils.o bfgs.o realized_vol_forecast.o
 	$(FC) $(FFLAGS) -o $@ $^
 
-xcorrel_intraday_assets.exe: xcorrel_intraday_assets.f90 kind.o date.o strings.o path_utils.o market_data.o intraday_returns.o matrix_print.o stats.o intraday_correlation_report.o
+xcorrel_intraday_assets.exe: xcorrel_intraday_assets.f90 kind.o date.o strings.o path_utils.o market_data.o intraday_returns.o matrix_print.o stats.o linalg.o intraday_correlation_report.o
+	$(FC) $(FFLAGS) -o $@ $^
+
+rfsv_intraday.o: rfsv_intraday.f90 kind.o math_const.o linalg.o stats.o bfgs.o realized_vol_forecast.o rough_sv.o
+	$(FC) $(FFLAGS) -c $<
+
+xfit_rfsv_intraday.exe: xfit_rfsv_intraday.f90 kind.o date.o strings.o path_utils.o glob.o input_files.o market_data.o intraday_realized_measures.o math_const.o stats.o linalg.o special.o distributions.o random.o bfgs.o rough_sv.o realized_vol_forecast.o rfsv_intraday.o
+	$(FC) $(FFLAGS) -o $@ $^
+
+garch_rv_compare.o: garch_rv_compare.f90 kind.o stats.o garch_types.o garch.o nagarch.o gjr.o egarch.o fgarch.o special.o garch_fit.o garch_forecast.o bfgs.o math_const.o realized_garch.o
+	$(FC) $(FFLAGS) -c $<
+
+xcompare_rv_vol_models.exe: xcompare_rv_vol_models.f90 kind.o date.o strings.o path_utils.o glob.o input_files.o market_data.o intraday_realized_measures.o math_const.o stats.o linalg.o special.o distributions.o random.o bfgs.o rough_sv.o realized_vol_forecast.o rfsv_intraday.o garch_types.o garch.o nagarch.o gjr.o egarch.o fgarch.o csv.o garch_fit.o garch_forecast.o realized_garch.o garch_rv_compare.o
+	$(FC) $(FFLAGS) -o $@ $^
+
+xcompare_ms_garch_models.exe: xcompare_ms_garch_models.f90 kind.o math_const.o date.o strings.o csv.o stats.o linalg.o \
+                               garch_types.o special.o distributions.o garch.o nagarch.o gjr.o egarch.o fgarch.o \
+                               garch_fit.o garch_fit_dist.o bfgs.o msgarch.o msnagarch.o
 	$(FC) $(FFLAGS) -o $@ $^
 
 xmix.exe: xmix.f90 date.o normal_mixture_em.o
@@ -577,7 +666,7 @@ path_utils.o: path_utils.f90 strings.o
 gas.o: gas.f90 kind.o math_const.o random.o
 	$(FC) $(FFLAGS) -c $<
 
-stats.o: stats.f90 kind.o
+stats.o: stats.f90 kind.o math_const.o linalg.o
 	$(FC) $(FFLAGS) -c $<
 
 regression_diagnostics.o: regression_diagnostics.f90 kind.o stats.o linalg.o
@@ -621,6 +710,9 @@ xgas_garch_scaling.o: xgas_garch_scaling.f90 kind.o date.o gas.o garch_flex.o \
 sv.o: sv.f90 kind.o math_const.o special.o random.o
 	$(FC) $(FFLAGS) -c $<
 
+rough_sv.o: rough_sv.f90 kind.o math_const.o special.o distributions.o random.o bfgs.o stats.o linalg.o
+	$(FC) $(FFLAGS) -c $<
+
 xsv_scaling.o: xsv_scaling.f90 kind.o date.o sv.o bfgs.o
 	$(FC) $(FFLAGS) -c $<
 
@@ -656,6 +748,9 @@ time_series_compare.o: time_series_compare.f90 kind.o strings.o
 
 vol_forecast_compare.o: vol_forecast_compare.f90 kind.o strings.o date.o csv.o time_series_compare.o
 	$(FC) $(FFLAGS) -c $<
+
+xrough_sv.exe: xrough_sv.f90 kind.o date.o math_const.o special.o bfgs.o distributions.o random.o stats.o linalg.o rough_sv.o
+	$(FC) $(FFLAGS) -o $@ $^
 
 xfit_sv_garch_returns.o: xfit_sv_garch_returns.f90 kind.o date.o sv.o garch_flex.o \
                           fgarch.o garch.o nagarch.o gjr.o \
@@ -725,7 +820,7 @@ xfit_dist_returns.o: xfit_dist_returns.f90 kind.o date.o nagarch.o distributions
 xcompare_nagarch_news.o: xcompare_nagarch_news.f90 kind.o date.o strings.o csv.o nagarch.o bfgs.o
 	$(FC) $(FFLAGS) -c $<
 
-xfgarch.o: xfgarch.f90 kind.o date.o garch_types.o fgarch.o garch_fit.o strings.o csv.o stats.o bfgs.o
+xfgarch.o: xfgarch.f90 kind.o date.o garch_types.o fgarch.o special.o garch_fit.o strings.o csv.o stats.o bfgs.o
 	$(FC) $(FFLAGS) -c $<
 
 xfit_nagarch_returns.o: xfit_nagarch_returns.f90 kind.o date.o strings.o csv.o stats.o nagarch.o garch_types.o garch_fit.o
@@ -768,6 +863,18 @@ xfit_symm_gen_garch_returns.o: xfit_symm_gen_garch_returns.f90 kind.o strings.o 
 	$(FC) $(FFLAGS) -c $<
 
 xfit_rugarch_builtin_symm_returns.o: xfit_rugarch_builtin_symm_returns.f90 kind.o date.o strings.o csv.o stats.o garch_types.o garch_fit.o garch_forecast.o model_selection.o
+	$(FC) $(FFLAGS) -c $<
+
+xfit_garch_m_returns.o: xfit_garch_m_returns.f90 kind.o strings.o date.o csv.o stats.o garch_types.o garch_fit.o
+	$(FC) $(FFLAGS) -c $<
+
+xfit_ar_returns.o: xfit_ar_returns.f90 kind.o math_const.o strings.o date.o csv.o stats.o linalg.o
+	$(FC) $(FFLAGS) -c $<
+
+xfit_ar_garch_returns.o: xfit_ar_garch_returns.f90 kind.o strings.o date.o csv.o stats.o garch_types.o garch_fit.o
+	$(FC) $(FFLAGS) -c $<
+
+xfit_tvp_ar_returns.o: xfit_tvp_ar_returns.f90 kind.o math_const.o strings.o date.o csv.o stats.o linalg.o bfgs.o
 	$(FC) $(FFLAGS) -c $<
 
 run: $(EXE)
@@ -908,6 +1015,9 @@ run_xsim_garch_fit: xsim_garch_fit.exe
 run_xsim_garch_fit_dist: xsim_garch_fit_dist.exe
 	./xsim_garch_fit_dist.exe
 
+run_sim_nagarch_t_model_selection: xsim_nagarch_t_model_selection.exe
+	./xsim_nagarch_t_model_selection.exe
+
 run_fit_gen_garch_dist_returns: xfit_gen_garch_dist_returns.exe
 	./xfit_gen_garch_dist_returns.exe
 
@@ -1000,6 +1110,9 @@ run_compare_regular_allhours_rv: xcompare_regular_allhours_rv.exe
 
 run_correl_intraday_assets: xcorrel_intraday_assets.exe
 	./xcorrel_intraday_assets.exe
+
+run_compare_ms_garch_models: xcompare_ms_garch_models.exe
+	./xcompare_ms_garch_models.exe
 
 clean:
 	rm -f *.o *.obj *.mod *.smod *.exe *.out
