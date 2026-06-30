@@ -13,6 +13,7 @@ module path_utils_mod
     public :: resolve_filename
     public :: files_with_extension_in_dir
     public :: csv_files_in_dir
+    public :: asset_label
 
 contains
 
@@ -172,6 +173,31 @@ contains
         end if
         deallocate(tmp)
     end subroutine files_with_extension_in_dir
+
+    ! Extract uppercase ticker from a path like "c:\foo\spy_1min_databento.bin".
+    ! Returns the basename up to the first underscore or dot, uppercased, in 8 chars.
+    pure function asset_label(path) result(label)
+        character(len=*), intent(in) :: path
+        character(len=8) :: label
+        integer :: i, isep, iu
+
+        label = ""
+        isep = 0
+        do i = len_trim(path), 1, -1
+            if (path(i:i) == '\' .or. path(i:i) == '/') then
+                isep = i
+                exit
+            end if
+        end do
+        iu = 0
+        do i = isep + 1, len_trim(path)
+            if (path(i:i) == '_' .or. path(i:i) == '.') exit
+            iu = iu + 1
+            if (iu > 8) exit
+            label(iu:iu) = path(i:i)
+        end do
+        label = uppercase(label)
+    end function asset_label
 
     ! Return full paths of CSV files in a directory using the host shell.
     subroutine csv_files_in_dir(dir, files)
