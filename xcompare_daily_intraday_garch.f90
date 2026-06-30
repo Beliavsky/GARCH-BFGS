@@ -7,13 +7,12 @@
 
 module compare_daily_intraday_garch_mod
     use kind_mod, only: dp
-    use math_const_mod, only: log_sqrt_2pi
     use date_mod, only: print_program_header, yyyymmdd, date_label
     use market_data_mod, only: ohlcv_series_t, read_intraday_prices_csv, filter_intraday_session, intraday_bin_ids
     use garch_types_mod, only: garch_params_t
     use garch_fit_mod, only: fit_nagarch, nagarch_persist
     use garch_mcsgarch_mod, only: mcsgarch_params_t, mcsgarch_fit_result_t, fit_mcsgarch_nagarch
-    use stats_mod, only: mean, demean_first
+    use stats_mod, only: mean, demean_first, gaussian_loglik
     use program_utils_mod, only: read_integer_arg, elapsed_since
     implicit none
     private
@@ -370,17 +369,6 @@ contains
         row%niter = niter
         row%converged = converged
     end subroutine fill_score_row
-
-    real(dp) function gaussian_loglik(y, h)
-        real(dp), intent(in) :: y(:), h(:)
-        integer :: i
-
-        gaussian_loglik = 0.0_dp
-        do i = 1, size(y)
-            gaussian_loglik = gaussian_loglik - log_sqrt_2pi - 0.5_dp*log(max(h(i), min_var)) - &
-                              0.5_dp*y(i)**2 / max(h(i), min_var)
-        end do
-    end function gaussian_loglik
 
     subroutine print_summary(filename, daily, train_end_day, ntest_days, ntrain_intra, mcs_fit, read_sec, fit_sec, elapsed_sec)
         character(len=*), intent(in) :: filename
