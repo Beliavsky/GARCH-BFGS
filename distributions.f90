@@ -61,9 +61,9 @@ module distributions_mod
     use special_mod,    only: bessel_k01, bessel_k_nu, digamma
     implicit none
     private
-
+    
+    integer, parameter, public :: len_dist = 8
     ! ── Distribution ID constants ─────────────────────────────────────────────
-
     integer, parameter, public :: dist_normal   = 1
     integer, parameter, public :: dist_t        = 2
     integer, parameter, public :: dist_ged      = 3
@@ -76,11 +76,11 @@ module distributions_mod
     integer, parameter, public :: dist_nig_gen  = 9
     integer, parameter, public :: dist_count    = 9
 
-    character(len=8), dimension(dist_count), parameter, public :: dist_names = &
+    character(len=len_dist), dimension(dist_count), parameter, public :: dist_names = &
         ["normal  ", "t       ", "ged     ", "logistic", &
          "laplace ", "sech    ", "nig_sym ", "fs_skewt", "nig     "]
 
-    ! Number of shape parameters estimated by fit_dist_std (0 or 1 per distribution).
+    ! Number of shape parameters estimated by fit_dist_std (0, 1, or 2 per distribution).
     integer, dimension(dist_count), parameter, public :: dist_npar_std = &
         [0, 1, 1, 0, 0, 0, 1, 2, 2]
 
