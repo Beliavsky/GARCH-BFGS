@@ -3,13 +3,13 @@
 
 module compare_intraday_ewma_freq_mod
     use kind_mod, only: dp
-    use math_const_mod, only: log_sqrt_2pi
     use date_mod, only: date_label, yyyymmdd
     use market_data_mod, only: ohlcv_series_t, read_intraday_prices_csv, filter_intraday_session, &
                                default_session_start_seconds
     use intraday_vol_baseline_mod, only: fit_lag1_diurnal_baseline, intraday_ewma_multiplier_from_proxy, &
                                          intraday_variance_forecast
     use input_files_mod, only: collect_input_filenames, MAX_PATH_LEN
+    use stats_mod, only: gaussian_loglik
     implicit none
     private
 
@@ -621,18 +621,6 @@ contains
     end subroutine fill_row
 
     ! Gaussian zero-mean log likelihood for returns and variance forecasts.
-    real(dp) function gaussian_loglik(returns, h)
-        real(dp), intent(in) :: returns(:), h(:)
-        integer :: i
-
-        if (size(returns) /= size(h)) error stop "gaussian_loglik: array sizes differ"
-        gaussian_loglik = 0.0_dp
-        do i = 1, size(returns)
-            gaussian_loglik = gaussian_loglik - log_sqrt_2pi - 0.5_dp*log(max(h(i), min_var)) - &
-                              0.5_dp*returns(i)**2 / max(h(i), min_var)
-        end do
-    end function gaussian_loglik
-
     ! Fit Student-t degrees of freedom for fixed variance forecasts.
     real(dp) function fitted_t_nu(returns, h) result(nu)
         real(dp), intent(in) :: returns(:), h(:)
