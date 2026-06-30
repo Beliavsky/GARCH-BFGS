@@ -37,7 +37,7 @@ contains
         type(ohlcv_series_t) :: text_series
         type(ohlcv_tick_series_t) :: tick_series
         real(dp) :: t_start, t0, t1, read_text_sec, convert_sec, write_sec, elapsed_sec
-        integer :: n_obs
+        integer :: n_obs, n_days, i
 
         if (same_dir) then
             eff_out_dir = dirname(input_file)
@@ -82,7 +82,16 @@ contains
         print '(A,A)', "Input CSV:       ", trim(input_file)
         print '(A,A)', "Output BIN:      ", trim(output_file)
         n_obs = text_series%nobs()
+        n_days = 1
+        do i = 2, n_obs
+            associate(d => text_series%timestamp(i)%date, d1 => text_series%timestamp(i-1)%date)
+                if (d%year /= d1%year .or. d%month /= d1%month .or. d%day /= d1%day) &
+                    n_days = n_days + 1
+            end associate
+        end do
         print '(A,I0)', "Observations:    ", n_obs
+        print '(A,I0)', "Days:            ", n_days
+        print '(A,F10.1)', "Obs/day:         ", real(n_obs, dp) / real(n_days, dp)
         if (write_format /= "dp") print '(A,F10.6)', "Tick size:       ", tick_series%tick_size
         if (max_obs > 0) print '(A,I0)', "Max observations:", max_obs
         print *
