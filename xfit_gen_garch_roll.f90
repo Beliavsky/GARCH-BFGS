@@ -15,7 +15,7 @@ program xfit_gen_garch_roll
     use csv_mod,            only: read_price_csv, print_price_sample_info
     use stats_mod,          only: mean
     use garch_fit_dist_mod, only: garch_dist_fit_result_t, fit_garch_dist_model, &
-                                  garch_dist_oos_nll
+                                  garch_dist_oos_nll, model_abbrev, dist_abbrev
     implicit none
 
     character(len=*), parameter :: default_prices_file = "spy_efa_eem_tlt_lqd.csv"
@@ -155,40 +155,10 @@ program xfit_gen_garch_roll
 
 contains
 
-    pure function model_abbrev(im) result(s)
-        integer, intent(in) :: im
-        character(len=4) :: s
-        select case (trim(models(im)))
-        case ("SYMM_GARCH", "GARCH"); s = "SG"
-        case ("NAGARCH");              s = "NAG"
-        case ("GJR_GARCH", "GJR");    s = "GJR"
-        case ("GJR_SIGNED");           s = "GJRS"
-        case ("EGARCH");               s = "EG"
-        case ("QGARCH");               s = "QG"
-        case default;                  s = models(im)(1:4)
-        end select
-    end function model_abbrev
-
-    pure function dist_abbrev(id) result(s)
-        integer, intent(in) :: id
-        character(len=6) :: s
-        select case (trim(dists(id)))
-        case ("NORMAL");   s = "N"
-        case ("T");        s = "T"
-        case ("FS_SKEWT"); s = "FS"
-        case ("SECH");     s = "SECH"
-        case ("GED");      s = "GED"
-        case ("LAPLACE");  s = "LAP"
-        case ("LOGISTIC"); s = "LOG"
-        case ("NIG");      s = "NIG"
-        case default;      s = dists(id)(1:min(6, len_trim(dists(id))))
-        end select
-    end function dist_abbrev
-
     pure function combo_label(im, id) result(lbl)
         integer, intent(in) :: im, id
         character(len=10) :: lbl
-        lbl = trim(model_abbrev(im)) // "/" // trim(dist_abbrev(id))
+        lbl = trim(model_abbrev(models(im))) // "/" // trim(dist_abbrev(dists(id)))
     end function combo_label
 
     subroutine print_window_header()
