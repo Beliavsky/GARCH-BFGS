@@ -6,9 +6,10 @@
 ! where x_t is a daily realized variance measure computed from intraday data.
 
 module realized_vol_forecast_mod
-    use kind_mod, only: dp
+    use kind_mod,       only: dp
     use math_const_mod, only: log_sqrt_2pi
-    use bfgs_mod, only: bfgs_minimize
+    use bfgs_mod,       only: bfgs_minimize
+    use linalg_mod,     only: gauss_elim
     implicit none
     private
 
@@ -181,6 +182,8 @@ module realized_vol_forecast_mod
     public :: ewma_affine_variance_path
     public :: gaussian_variance_loglik
     public :: qlike_loss
+    public :: fit_log_har_direct
+    public :: fit_log_har_asym_direct
 
 contains
 
@@ -1716,5 +1719,68 @@ contains
             weights = 1.0_dp / real(k_lag, dp)
         end if
     end subroutine beta_lag_weights
+
+
+    subroutine fit_log_har_direct(x, h, beta, nfit)
+        ! Direct h-step OLS log-HAR fit: log(RV_{t+h}) = b0 + b1*log(RV_t) + b2*mean(log(RV_{t-21:t})).
+        real(dp), intent(in)  :: x(:)     ! daily log realized variance series
+        integer,  intent(in)  :: h        ! forecast horizon for direct h-step projection
+        real(dp), intent(out) :: beta(3)  ! OLS coefficients: intercept, daily log-RV, monthly avg log-RV
+        integer,  intent(out) :: nfit     ! number of observations used in fit
+
+        integer :: t, n, lag_m
+        real(dp), allocatable :: A(:,:), y(:), XtX(:,:), Xty(:)
+
+        lag_m = 21
+        n     = size(x)
+        nfit  = n - lag_m - h
+        beta  = 0.0_dp
+        if (nfit <= 3) return
+
+        allocate(A(nfit,3), y(nfit), XtX(3,3), Xty(3))
+        do t = 1, nfit
+            y(t)   = x(lag_m + t + h)
+            A(t,1) = 1.0_dp
+            A(t,2) = x(lag_m + t)
+            A(t,3) = sum(x(lag_m+t-21:lag_m+t)) / 22.0_dp
+        end do
+        XtX = matmul(transpose(A), A)
+        Xty = matmul(transpose(A), y)
+        call gauss_elim(XtX, Xty, 3, beta)
+        deallocate(A, y, XtX, Xty)
+    end subroutine fit_log_har_direct
+
+    subroutine fit_log_har_asym_direct(x, xneg, h, beta, nfit)
+        ! Direct h-step OLS asymmetric log-HAR fit (HAR-A):
+        !   log(RV_{t+h}) = b0 + b1*log(RV_t) + b2*log(RSV^-_t) + b3*mean(log(RV_{t-21:t}))
+        ! The negative semi-variance term b2 captures the leverage effect.
+        real(dp), intent(in)  :: x(:)     ! daily log realized variance series
+        real(dp), intent(in)  :: xneg(:)  ! daily log negative realized semi-variance
+        integer,  intent(in)  :: h        ! forecast horizon for direct h-step projection
+        real(dp), intent(out) :: beta(4)  ! OLS: intercept, log-RV, log-RSV^-, monthly avg log-RV
+        integer,  intent(out) :: nfit     ! number of observations used in fit
+
+        integer :: t, n, lag_m
+        real(dp), allocatable :: A(:,:), y(:), XtX(:,:), Xty(:)
+
+        lag_m = 21
+        n     = size(x)
+        nfit  = n - lag_m - h
+        beta  = 0.0_dp
+        if (nfit <= 4) return
+
+        allocate(A(nfit,4), y(nfit), XtX(4,4), Xty(4))
+        do t = 1, nfit
+            y(t)   = x(lag_m + t + h)
+            A(t,1) = 1.0_dp
+            A(t,2) = x(lag_m + t)
+            A(t,3) = xneg(lag_m + t)
+            A(t,4) = sum(x(lag_m+t-21:lag_m+t)) / 22.0_dp
+        end do
+        XtX = matmul(transpose(A), A)
+        Xty = matmul(transpose(A), y)
+        call gauss_elim(XtX, Xty, 4, beta)
+        deallocate(A, y, XtX, Xty)
+    end subroutine fit_log_har_asym_direct
 
 end module realized_vol_forecast_mod
