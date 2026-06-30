@@ -2,17 +2,17 @@
 
 module compare_intraday_ewma_ohlc_mod
     use kind_mod, only: dp
-    use math_const_mod, only: log_sqrt_2pi
     use date_mod, only: date_label, yyyymmdd
     use market_data_mod, only: ohlcv_series_t, read_intraday_prices_csv, filter_intraday_session, intraday_bin_ids
     use intraday_vol_baseline_mod, only: fit_lag1_diurnal_baseline, fit_lag1_diurnal_intraday_ewma_baseline, &
                                          parkinson_variance_proxy, garman_klass_variance_proxy, &
                                          intraday_ewma_multiplier_from_proxy, intraday_variance_forecast
     use input_files_mod, only: collect_input_filenames, MAX_PATH_LEN
+    use stats_mod, only: gaussian_loglik
     implicit none
     private
 
-    character(len=*), parameter :: file_pattern = "c:\python\intraday_prices\*.csv"
+    character(len=*), parameter :: file_pattern = "c:\python\intraday_prices\*min_databento.csv"
     real(dp), parameter :: min_var = 1.0e-12_dp
     real(dp), parameter :: intraday_lambda = 0.94_dp
     logical, parameter :: smooth_diurnal_curve = .true.
@@ -149,18 +149,6 @@ contains
     end subroutine fill_row
 
     ! Gaussian zero-mean log likelihood for returns and variance forecasts.
-    real(dp) function gaussian_loglik(returns, h)
-        real(dp), intent(in) :: returns(:), h(:)
-        integer :: i
-
-        if (size(returns) /= size(h)) error stop "gaussian_loglik: array sizes differ"
-        gaussian_loglik = 0.0_dp
-        do i = 1, size(returns)
-            gaussian_loglik = gaussian_loglik - log_sqrt_2pi - 0.5_dp*log(max(h(i), min_var)) - &
-                              0.5_dp*returns(i)**2 / max(h(i), min_var)
-        end do
-    end function gaussian_loglik
-
     ! Print the EWMA proxy comparison table.
     subroutine print_summary(filename, n_regular_bars, returns, date_id, bin_id, rows, read_sec, elapsed_sec)
         character(len=*), intent(in) :: filename
