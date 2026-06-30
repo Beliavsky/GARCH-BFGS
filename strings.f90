@@ -1,7 +1,7 @@
 module strings_mod
     implicit none
     private
-    public :: uppercase, split_string
+    public :: uppercase, split_string, int_to_str
 
 contains
 
@@ -56,5 +56,13 @@ contains
             i = i + 1
         end do
     end subroutine split_string
+
+
+    function int_to_str(i) result(s)
+        ! Convert integer to trimmed string with no leading blanks.
+        integer, intent(in) :: i
+        character(len=12) :: s
+        write(s,'(I0)') i
+    end function int_to_str
 
 end module strings_mod
